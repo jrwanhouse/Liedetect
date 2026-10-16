@@ -26,7 +26,7 @@ PADRAO = {
 
 DETECTORES = {
     "mediapipe": "MediaPipe (padrão, licença Apache 2.0)",
-    "pyfeat": "Py-Feat (pesquisa: pesos não liberados para uso comercial; lento em CPU)",
+    "pyfeat": "Py-Feat (modelos treinados com FACS; lento em CPU)",
 }
 OPCOES = {"detector": DETECTORES, "emocoes_pyfeat": {"modelo", "emfacs"}, "pyfeat_modelo": {"v2", "v1"}}
 

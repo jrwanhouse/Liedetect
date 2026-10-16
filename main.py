@@ -106,8 +106,8 @@ def rodar_modo_terminal(prefs):
            "salvar_recortes": prefs["salvar_recortes"]}
     cfg |= {k: prefs[k] for k in ("detector", "emocoes_pyfeat", "pyfeat_modelo", "pyfeat_pular", "pyfeat_python")}
     if cfg["detector"] == "pyfeat":
-        from pyfeat_backend import AVISO_LICENCA
-        print(f"⚠ {AVISO_LICENCA}")
+        from pyfeat_backend import NOTA_PYFEAT
+        print(f"ℹ {NOTA_PYFEAT}")
     try:
         analisar_no_terminal(video_input, cfg, prefs["pasta_saida"], perguntas)
     except (OSError, RuntimeError) as e:
@@ -128,8 +128,8 @@ def analisar_projeto_no_terminal(caminho, prefs):
         print("ℹ️  A analise anterior do projeto sera substituida.")
     try:
         if proj.detector == "pyfeat":
-            from pyfeat_backend import AVISO_LICENCA
-            print(f"⚠ {AVISO_LICENCA}")
+            from pyfeat_backend import NOTA_PYFEAT
+            print(f"ℹ {NOTA_PYFEAT}")
         cfg = proj.configuracoes() | {"pyfeat_python": prefs["pyfeat_python"]}
         dados = analisar_no_terminal(proj.video, cfg, proj.pasta_saida(), proj.perguntas,
                                      guardar_quadros=True)

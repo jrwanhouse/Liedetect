@@ -5,8 +5,9 @@ Python separado (.venv-pyfeat, ver README) por meio de pyfeat_worker.py. Este mo
 esse processo, le o CSV que ele grava e transforma cada linha num Resultado, que segue o mesmo
 caminho do MediaPipe (episodios, atencao, perguntas, revisao, relatorios, validacao).
 
-LICENCA: o codigo do Py-Feat e MIT, mas os pesos dos modelos tem termos proprios (bases de
-treino academicas; img2pose CC BY-NC). Nao liberado para uso comercial sem analise juridica.
+LICENCA: o codigo do Py-Feat e MIT; os pesos dos modelos tem termos proprios (bases de treino
+academicas; img2pose CC BY-NC) que permitem uso nao comercial, que e o caso deste sistema.
+Se o uso passar a ser comercial, o Py-Feat precisa ser reavaliado.
 """
 import bisect
 import csv
@@ -22,8 +23,8 @@ from facs import (AUS_PYFEAT, AnalisadorBase, CALIBRACAO_SEGUNDOS, EMOCOES, MALH
 
 PASTA = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.join(PASTA, "pyfeat_worker.py")
-AVISO_LICENCA = ("Py-Feat: os pesos dos modelos nao estao liberados para uso comercial "
-                 "(bases de treino academicas; img2pose CC BY-NC). Use para pesquisa e comparacao.")
+NOTA_PYFEAT = ("Py-Feat: modelos de uso nao comercial (bases academicas; img2pose CC BY-NC). "
+               "Em CPU leva ~2-3 s por frame.")
 
 EMOCOES_PYFEAT = {"anger": "Raiva", "disgust": "Nojo", "fear": "Medo", "happiness": "Felicidade",
                   "sadness": "Tristeza", "surprise": "Surpresa"}

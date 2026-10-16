@@ -1,5 +1,5 @@
 # Ambiente separado do Py-Feat (Python 3.11-3.14; o PyTorch nao existe para o 3.15).
 # Opcional: so e necessario para analisar com o detector Py-Feat. Ver README.
-# LICENCA: os pesos dos modelos do Py-Feat nao estao liberados para uso comercial.
+# LICENCA: os pesos dos modelos do Py-Feat sao de uso nao comercial (o caso deste sistema).
 py-feat==2.1.5
 opencv-python-headless==5.0.0.93

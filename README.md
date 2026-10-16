@@ -33,7 +33,7 @@ Emoções pelas combinações EMFACS (protótipos e variantes de Ekman & Friesen
 ## 🔬 Detector alternativo: Py-Feat (opcional)
 Cada projeto pode usar o **MediaPipe** (padrão) ou o **Py-Feat** para medir AUs e emoções. A escolha fica em **Arquivo › Configurações do projeto** (ou nas **Preferências**, como padrão para novos projetos). O resto do sistema é o mesmo nos dois: episódios, pontos de atenção, perguntas, player de revisão, relatórios e validação FACS. Cada análise registra qual detector usou.
 
-> ⚠ **Licença:** o código do Py-Feat é MIT, mas **os pesos dos modelos não estão liberados para uso comercial**: as bases de treino são acadêmicas, e o img2pose é CC BY-NC. Use o Py-Feat para pesquisa e comparação, e não o distribua no produto vendido sem análise jurídica.
+> **Licença:** o código do Py-Feat é MIT. Os pesos dos modelos têm termos próprios (bases de treino acadêmicas; img2pose CC BY-NC) que permitem **uso não comercial**, o caso deste sistema. Se o uso passar a ser comercial, o Py-Feat precisa ser reavaliado.
 
 **Instalação.** O Py-Feat precisa de PyTorch, que não existe para o Python 3.15. Por isso ele roda num **ambiente separado**, com Python 3.11 a 3.14, chamado pelo programa como processo externo (`pyfeat_worker.py`):
 ```bash
@@ -111,12 +111,14 @@ python -m unittest discover -s tests -v
 Os testes usam um detector simulado: verificam a lógica do sistema, não a precisão do MediaPipe em rostos reais. Duas convenções do modelo foram conferidas em foto real: o "Left" dos blendshapes é o lado esquerdo do sujeito, e fechar os olhos também eleva `eyeSquint` e `eyeLookDown`, por isso essas AUs são suprimidas durante a piscada.
 
 ## 📜 Licenças
-O sistema é Apache 2.0. As dependências permitem uso comercial e código fechado:
+O sistema é Apache 2.0 e de **uso não comercial**. Dependências principais:
 - **PySide6:** LGPL-3.0.
 - **MediaPipe e OpenCV:** Apache 2.0.
 - **NumPy:** BSD.
 
-A interface usava PyQt6, que é GPL-3.0 e foi trocado pelo PySide6. Ao distribuir o programa, respeite a LGPL do Qt: use as bibliotecas do Qt como bibliotecas dinâmicas e inclua o aviso de licença.
+- **Py-Feat** (opcional, ambiente separado): código MIT; pesos de uso não comercial.
+
+A interface usa PySide6 (LGPL), e não PyQt6 (GPL), porque o projeto chegou a prever venda com código fechado. Ao distribuir o programa, respeite a LGPL do Qt: use as bibliotecas do Qt como bibliotecas dinâmicas e inclua o aviso de licença.
 
 **Python 3.15 + PySide6 6.12:** o `compat.py` desliga os imports adiados (PEP 810), porque o shiboken6 impede que eles sejam resolvidos e o MediaPipe falhava ("'lazy_import' object is not callable"). Ele precisa ser o primeiro import.
 
