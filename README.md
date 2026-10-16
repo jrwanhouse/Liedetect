@@ -62,7 +62,10 @@ No fim, o **resumo por pergunta** (`relatorio_perguntas.csv`) mostra para cada p
 ```bash
 python -m unittest discover -s tests -v
 ```
-`tests/test_medo.py` verifica a detecção de medo em três camadas: as regras EMFACS, o caminho blendshapes → AUs → emoção (com calibração), e uma sequência de vídeo simulada, com microexpressão e episódio sustentado. Os testes usam um detector simulado, então não testam a precisão do MediaPipe em rostos reais.
+- `tests/test_aus.py`: cada AU isolada deve gerar só ela mesma. Cobre ainda AU6×AU7 no sorriso, AU25/26/27 pela abertura da boca, pálpebras (AU43/45/46, sem AU7 nem olhar falsos ao piscar), olhar (61–64), lado L/R, cabeça (51–58, sem AU53 falsa com a boca aberta), intensidade e coerência das tabelas com o FACS.
+- `tests/test_medo.py`: as regras EMFACS de medo, o caminho blendshapes → AUs → emoção (com calibração) e uma sequência de vídeo simulada, com microexpressão e episódio sustentado.
+
+Os testes usam um detector simulado: verificam a lógica do sistema, não a precisão do MediaPipe em rostos reais. Duas convenções do modelo foram conferidas em foto real: o "Left" dos blendshapes é o lado esquerdo do sujeito, e fechar os olhos também eleva `eyeSquint` e `eyeLookDown`, por isso essas AUs são suprimidas durante a piscada.
 
 ## 🛠️ Instalação das Dependências
 ```bash

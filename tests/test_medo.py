@@ -2,36 +2,10 @@
 
 Rodar: python -m unittest discover -s tests -v
 """
-import os
-import sys
 import unittest
-from types import SimpleNamespace
-from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import facs  # noqa: E402
-from facs import AU, AnalisadorFACS, classificar_emocoes  # noqa: E402
-
-# Os 52 blendshapes emitidos pelo FaceLandmarker
-BLENDSHAPES = [
-    "_neutral", "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
-    "cheekPuff", "cheekSquintLeft", "cheekSquintRight", "eyeBlinkLeft", "eyeBlinkRight",
-    "eyeLookDownLeft", "eyeLookDownRight", "eyeLookInLeft", "eyeLookInRight", "eyeLookOutLeft",
-    "eyeLookOutRight", "eyeLookUpLeft", "eyeLookUpRight", "eyeSquintLeft", "eyeSquintRight",
-    "eyeWideLeft", "eyeWideRight", "jawForward", "jawLeft", "jawOpen", "jawRight", "mouthClose",
-    "mouthDimpleLeft", "mouthDimpleRight", "mouthFrownLeft", "mouthFrownRight", "mouthFunnel",
-    "mouthLeft", "mouthLowerDownLeft", "mouthLowerDownRight", "mouthPressLeft", "mouthPressRight",
-    "mouthPucker", "mouthRight", "mouthRollLower", "mouthRollUpper", "mouthShrugLower",
-    "mouthShrugUpper", "mouthSmileLeft", "mouthSmileRight", "mouthStretchLeft", "mouthStretchRight",
-    "mouthUpperUpLeft", "mouthUpperUpRight", "noseSneerLeft", "noseSneerRight",
-]
-
-# Rosto neutro com os vieses tipicos do modelo (ex.: browDown alto mesmo sem franzir)
-NEUTRO = dict.fromkeys(BLENDSHAPES, 0.02) | {
-    "browDownLeft": 0.35, "browDownRight": 0.33, "eyeSquintLeft": 0.25, "eyeSquintRight": 0.22,
-    "eyeBlinkLeft": 0.15, "eyeBlinkRight": 0.15, "jawOpen": 0.05,
-}
+from auxiliares import NEUTRO, analisar_sequencia
+from facs import AU, classificar_emocoes
 
 # Prototipo de medo (Ekman): AU1+2+4+5+7+20+26
 MEDO = NEUTRO | {
@@ -77,43 +51,6 @@ class RegrasMedo(unittest.TestCase):
         for combo in [(1, 2), (1, 4), (4,), (5,), (20,), (1, 2, 4), (4, 5, 7)]:
             with self.subTest(combo=combo):
                 self.assertNotIn("Medo", classificar_emocoes(aus(*combo)))
-
-
-def _landmarks_frontais():
-    """478 pontos com a geometria minima usada pela pose (olhos, bochechas, nariz, queixo)."""
-    lm = [SimpleNamespace(x=0.5, y=0.5) for _ in range(478)]
-    for idx, (x, y) in {33: (0.40, 0.40), 263: (0.60, 0.40), 234: (0.32, 0.50), 454: (0.68, 0.50),
-                        1: (0.50, 0.52), 152: (0.50, 0.75)}.items():
-        lm[idx] = SimpleNamespace(x=x, y=y)
-    return lm
-
-
-class DetectorFalso:
-    """Imita o FaceLandmarker devolvendo blendshapes programados por frame."""
-
-    def __init__(self, sequencia):
-        self.sequencia = sequencia
-        self.landmarks = _landmarks_frontais()
-        self.i = 0
-
-    def detect_for_video(self, _imagem, _ms):
-        bs = self.sequencia[min(self.i, len(self.sequencia) - 1)]
-        self.i += 1
-        categorias = [SimpleNamespace(category_name=k, score=v) for k, v in bs.items()]
-        return SimpleNamespace(face_landmarks=[self.landmarks], face_blendshapes=[categorias])
-
-    def close(self):
-        pass
-
-
-def analisar_sequencia(sequencia, fps=30, espelhado=False):
-    import numpy as np
-    frame = np.zeros((480, 640, 3), np.uint8)
-    with mock.patch.object(facs, "criar_detector", lambda: DetectorFalso(sequencia)):
-        analisador = AnalisadorFACS(fps, espelhado)
-        resultados = [analisador.processar(frame.copy(), i) for i in range(len(sequencia))]
-        analisador.finalizar()
-    return analisador, resultados
 
 
 class BlendshapesParaMedo(unittest.TestCase):

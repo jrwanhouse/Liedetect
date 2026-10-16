@@ -82,6 +82,10 @@ NAO_DETECTAVEIS = {
 LIMIAR_PADRAO = 0.3
 LIMIARES = {25: 0.15, 26: 0.25, 27: 0.65, 43: 0.5, 45: 0.5, 46: 0.5}
 LIMIARES |= {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58, 61, 62, 63, 64)}
+# Score que corresponde a intensidade E; a AU26 vai so ate onde comeca a AU27
+TETOS = {26: LIMIARES[27]}
+# Com as palpebras descendo o modelo sobe eyeLookDown e eyeSquint: acima disto o olhar nao e medido
+PALPEBRA_MAX_OLHAR = 0.35
 
 # Landmarks onde cada AU aparece; AUs bilaterais listam [lado direito do sujeito, lado esquerdo]
 PONTOS_AU = {
@@ -158,8 +162,8 @@ def criar_detector():
     return vision.FaceLandmarker.create_from_options(opcoes)
 
 
-def intensidade(score, limiar):
-    passo = (1 - limiar) / 5
+def intensidade(score, limiar, teto=1.0):
+    passo = (teto - limiar) / 5
     return "ABCDE"[min(4, int((score - limiar) / passo))]
 
 
@@ -193,15 +197,23 @@ def classificar_emocoes(aus):
 
 
 def _pose(lm, w, h):
+    """(yaw, pitch, roll, largura) a partir de pontos que nao se movem com a expressao.
+
+    Os eixos seguem a linha dos olhos (corrige a inclinacao lateral). O pitch usa a distancia
+    entre os olhos como escala: o queixo desce quando a boca abre e nao pode servir de referencia.
+    """
     p = lambda i: np.array([lm[i].x * w, lm[i].y * h])
     olho_d, olho_e = p(33), p(263)
     bochecha_d, bochecha_e = p(234), p(454)
-    nariz, queixo = p(1), p(152)
+    nariz = p(1)
+    eixo = olho_e - olho_d
+    interocular = np.linalg.norm(eixo)
+    horizontal = eixo / interocular
+    vertical = np.array([-horizontal[1], horizontal[0]])  # aponta para baixo na imagem
     largura = np.linalg.norm(bochecha_e - bochecha_d)
-    yaw = (nariz[0] - (bochecha_d[0] + bochecha_e[0]) / 2) / largura
-    roll = math.degrees(math.atan2(olho_e[1] - olho_d[1], olho_e[0] - olho_d[0]))
-    meio_olhos = (olho_d + olho_e) / 2
-    pitch = (nariz[1] - meio_olhos[1]) / (queixo[1] - meio_olhos[1])
+    yaw = np.dot(nariz - (bochecha_d + bochecha_e) / 2, horizontal) / largura
+    pitch = np.dot(nariz - (olho_d + olho_e) / 2, vertical) / interocular
+    roll = math.degrees(math.atan2(eixo[1], eixo[0]))
     return np.array([yaw, pitch, roll, largura])
 
 
@@ -292,6 +304,13 @@ class AnalisadorFACS:
             else:
                 s[au] = bs[base]
 
+        pisca_e, pisca_d = bs["eyeBlinkLeft"], bs["eyeBlinkRight"]
+        fechado = (pisca_e >= LIMIARES[45], pisca_d >= LIMIARES[45])
+        # O FACS nao codifica AU5/AU7 com a palpebra fechada, e o modelo sobe eyeSquint ao fechar o olho
+        for au in (5, 7):
+            lados[au] = tuple(0.0 if f else v for v, f in zip(lados[au], fechado))
+            s[au] = max(lados[au])
+
         # O MediaPipe quase nao ativa cheekSquint: o estreitamento do olho (eyeSquint) conta
         # como AU6 durante o sorriso (Duchenne) e como AU7 fora dele.
         if s[12] >= LIMIAR_PADRAO:
@@ -304,9 +323,7 @@ class AnalisadorFACS:
         s[27] = jaw if jaw >= LIMIARES[27] else 0.0
         s[28] = max(bs["mouthRollUpper"], bs["mouthRollLower"])
 
-        pisca_e, pisca_d = bs["eyeBlinkLeft"], bs["eyeBlinkRight"]
-        olhos_fechados = min(pisca_e, pisca_d) >= LIMIARES[45]
-        if olhos_fechados:
+        if all(fechado):
             if self._frames_fechado == 0:
                 self.piscadas += 1
                 self._piscou = True
@@ -316,7 +333,7 @@ class AnalisadorFACS:
             self._frames_fechado = 0
             lados[46] = (pisca_e, pisca_d)
             s[46] = max(pisca_e, pisca_d)
-            # olhar so e confiavel com olhos abertos
+        if max(pisca_e, pisca_d) < PALPEBRA_MAX_OLHAR:  # olhar so e confiavel com olhos abertos
             s[61] = (bs["eyeLookOutLeft"] + bs["eyeLookInRight"]) / 2
             s[62] = (bs["eyeLookInLeft"] + bs["eyeLookOutRight"]) / 2
             s[63] = (bs["eyeLookUpLeft"] + bs["eyeLookUpRight"]) / 2
@@ -325,7 +342,7 @@ class AnalisadorFACS:
         d_yaw, d_pitch, d_roll = pose[:3] - self.base_pose[:3]
         razao_largura = pose[3] / self.base_pose[3]
         s[51 if d_yaw > 0 else 52] = _escala(d_yaw, 0.08)
-        s[53 if d_pitch < 0 else 54] = _escala(d_pitch, 0.06)
+        s[53 if d_pitch < 0 else 54] = _escala(d_pitch, 0.08)
         s[55 if d_roll > 0 else 56] = _escala(d_roll, 8.0)
         if abs(d_yaw) < 0.08:
             if razao_largura > 1:
@@ -347,7 +364,7 @@ class AnalisadorFACS:
                     lado = "R"
             if num == 46 and not lado:
                 continue  # os dois olhos meio fechados nao e piscadela
-            aus[num] = AU(score, intensidade(score, limiar), lado)
+            aus[num] = AU(score, intensidade(score, limiar, TETOS.get(num, 1.0)), lado)
         return aus
 
     def _atualizar_episodios(self, res, tempo):
