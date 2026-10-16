@@ -19,8 +19,8 @@ Emoções pelas combinações EMFACS (protótipos e variantes de Ekman & Friesen
 | Felicidade | 6+12 |
 | Tristeza | 1+4+15, 1+4+15+17, 6+15 |
 | Surpresa | 1+2+5+26/27, 1+2+26, 1+2+5 |
-| Medo | 1+2+4+5+20(+26), 1+2+4+5, 1+2+4+20, 5+20 |
-| Raiva | 4+5+7+23, 4+5+23, 4+7+23, 4+5+7 |
+| Medo | 1+2+4+5+7+20+26, 1+2+4+5+20(+26), 1+2+4+5(+25/26/27), 1+2+4+20, 5+20 |
+| Raiva | 4+5+7+23, 4+5+23, 4+7+23, 4+5+7 (nunca com AU2) |
 | Nojo | 9, 9+15+16, 9+17, 10+17, 10+16+25, 10+15 |
 | Desprezo | AU12 ou AU14 unilateral |
 
@@ -57,6 +57,12 @@ No fim, o **resumo por pergunta** (`relatorio_perguntas.csv`) mostra para cada p
 - as emoções detectadas e a reação nos 3 s seguintes à marcação;
 - os pontos de atenção e as piscadas por minuto;
 - se a pergunta **destoa das demais**, quando há pelo menos 3 perguntas para comparar.
+
+## 🧪 Testes
+```bash
+python -m unittest discover -s tests -v
+```
+`tests/test_medo.py` verifica a detecção de medo em três camadas: as regras EMFACS, o caminho blendshapes → AUs → emoção (com calibração), e uma sequência de vídeo simulada, com microexpressão e episódio sustentado. Os testes usam um detector simulado, então não testam a precisão do MediaPipe em rostos reais.
 
 ## 🛠️ Instalação das Dependências
 ```bash
