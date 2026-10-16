@@ -1,3 +1,4 @@
+import compat  # noqa: F401  (antes de qualquer outro import)
 import argparse
 import sys
 import os
@@ -12,7 +13,7 @@ def verificar_suporte_grafico():
     if sys.platform != "win32" and "DISPLAY" not in os.environ:
         return False
     try:
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication(sys.argv)
         return True
     except Exception:

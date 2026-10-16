@@ -1,4 +1,4 @@
-"""Interface grafica (PyQt6), organizada em projetos.
+"""Interface grafica (PySide6/Qt, licenca LGPL), organizada em projetos.
 
 Cada projeto guarda video, configuracoes, perguntas e resultados (projeto.py). Dois modos
 de player, escolhidos em Preferencias:
@@ -8,16 +8,17 @@ de player, escolhidos em Preferencias:
 Nos dois modos, ao fim da analise (ou ao abrir um projeto ja analisado) abre o player de
 revisao, com audio em tempo real, play/pausa e navegacao.
 """
+import compat  # noqa: F401  (antes de qualquer outro import)
 import os
 import shutil
 import sys
 import time
 
 import cv2
-from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                              QPushButton, QSlider, QVBoxLayout, QWidget)
@@ -70,11 +71,11 @@ def para_qimage(frame):
 
 
 class AnaliseThread(QThread):
-    frame_signal = pyqtSignal(QImage)
-    status_signal = pyqtSignal(str)
-    evento_signal = pyqtSignal(str, object)              # tipo, dado (ver descrever_evento)
-    linha_tempo_signal = pyqtSignal(object, object, float)  # episodios, pontos, posicao (s)
-    concluido_signal = pyqtSignal(object)
+    frame_signal = Signal(QImage)
+    status_signal = Signal(str)
+    evento_signal = Signal(str, object)              # tipo, dado (ver descrever_evento)
+    linha_tempo_signal = Signal(object, object, float)  # episodios, pontos, posicao (s)
+    concluido_signal = Signal(object)
 
     def __init__(self, video, cfg, pasta, tempo_real):
         super().__init__()
@@ -177,9 +178,9 @@ class PlayerAudio:
 
 class PlayerRevisao(QObject):
     """Exibe o video no relogio do audio, redesenhando as AUs gravadas na analise."""
-    frame_signal = pyqtSignal(QImage)
-    posicao_signal = pyqtSignal(float)
-    tocando_signal = pyqtSignal(bool)
+    frame_signal = Signal(QImage)
+    posicao_signal = Signal(float)
+    tocando_signal = Signal(bool)
 
     def __init__(self, video, fps, duracao, resultados, prefs):
         super().__init__()
@@ -257,7 +258,7 @@ class PlayerRevisao(QObject):
 class LinhaDoTempo(QWidget):
     """Uma faixa por emoção e uma de pontos de atenção, com as perguntas marcadas."""
     ALTURA_FAIXA, LARGURA_ROTULO, TOPO = 18, 90, 14
-    clicado = pyqtSignal(float)
+    clicado = Signal(float)
 
     def __init__(self):
         super().__init__()
@@ -415,33 +416,38 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1280, 820)
         self.setStyleSheet("background-color: #121212; color: #FFFFFF;")
         self.projeto = None   # projeto aberto
-        self.thread = None    # analise em andamento
+        self.thread_analise = None    # analise em andamento
         self.audio = None     # audio durante a analise em tempo real
         self.revisao = None   # player de revisao
         self.initUI()
         self._atualizar_titulo()
 
     def initUI(self):
-        menu = self.menuBar().addMenu("Arquivo")
-        for nome, atalho, funcao in [
-            ("Novo projeto...", "Ctrl+N", self.novo_projeto),
-            ("Abrir projeto...", "Ctrl+O", self.abrir_projeto),
-            ("Salvar projeto", "Ctrl+S", self.salvar_projeto),
-            ("Salvar projeto como...", "Ctrl+Shift+S", self.salvar_projeto_como),
-            (None, None, None),
-            ("Configurações do projeto...", None, self.configurar_projeto),
-            ("Preferências...", "Ctrl+,", self.abrir_preferencias),
-            (None, None, None),
-            ("Sair", None, self.close),
-        ]:
-            if nome is None:
-                menu.addSeparator()
-                continue
-            acao = QAction(nome, self)
-            if atalho:
-                acao.setShortcut(QKeySequence(atalho))
-            acao.triggered.connect(lambda _=False, f=funcao: f())
-            menu.addAction(acao)
+        menus = {
+            "Arquivo": [
+                ("Novo projeto...", "Ctrl+N", self.novo_projeto),
+                ("Abrir projeto...", "Ctrl+O", self.abrir_projeto),
+                ("Salvar projeto", "Ctrl+S", self.salvar_projeto),
+                ("Salvar projeto como...", "Ctrl+Shift+S", self.salvar_projeto_como),
+                None,
+                ("Configurações do projeto...", None, self.configurar_projeto),
+                ("Preferências...", "Ctrl+,", self.abrir_preferencias),
+                None,
+                ("Sair", None, self.close),
+            ],
+        }
+        for titulo, acoes in menus.items():
+            menu = self.menuBar().addMenu(titulo)
+            for item in acoes:
+                if item is None:
+                    menu.addSeparator()
+                    continue
+                nome, atalho, funcao = item
+                acao = QAction(nome, self)
+                if atalho:
+                    acao.setShortcut(QKeySequence(atalho))
+                acao.triggered.connect(lambda _=False, f=funcao: f())
+                menu.addAction(acao)
 
         layout = QHBoxLayout()
         left = QVBoxLayout()
@@ -503,8 +509,9 @@ class MainWindow(QMainWindow):
         dica = QLabel("Duplo clique: ir ao trecho · Delete: remover pergunta selecionada")
         dica.setStyleSheet("color: #888888; font-size: 11px;")
         right.addWidget(dica)
-        QShortcut(QKeySequence("Delete"), self.list_alerts, self.remover_pergunta,
-                  context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        apagar = QShortcut(QKeySequence("Delete"), self.list_alerts)
+        apagar.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        apagar.activated.connect(self.remover_pergunta)
         right.addWidget(QLabel("Resumo por pergunta"))
         self.list_resumo = QListWidget()
         self.list_resumo.setStyleSheet("background-color: #1E1E1E;")
@@ -528,7 +535,7 @@ class MainWindow(QMainWindow):
 
     # --- estado da janela ---
     def _analisando(self):
-        return self.thread is not None and self.thread.isRunning()
+        return self.thread_analise is not None and self.thread_analise.isRunning()
 
     def _atualizar_titulo(self):
         titulo = "Detector Forense"
@@ -705,7 +712,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Nenhum projeto aberto.")
             return
         dialogo = DialogoProjeto(self.projeto, self)
-        if dialogo.exec() != QDialog.DialogCode.Accepted:
+        if not dialogo.exec():
             return
         valores = dialogo.valores()
         if valores != self.projeto.configuracoes():
@@ -727,7 +734,7 @@ class MainWindow(QMainWindow):
     # --- preferencias ---
     def abrir_preferencias(self):
         dialogo = DialogoPreferencias(self.prefs, self.caminho_prefs, self)
-        if dialogo.exec() != QDialog.DialogCode.Accepted:
+        if not dialogo.exec():
             return
         self.prefs.update(dialogo.valores())
         try:
@@ -744,8 +751,8 @@ class MainWindow(QMainWindow):
     def _encerrar(self):
         self._sync.stop()
         if self._analisando():
-            self.thread.blockSignals(True)  # o resultado nao pertence mais a janela
-            self.thread.stop()
+            self.thread_analise.blockSignals(True)  # o resultado nao pertence mais a janela
+            self.thread_analise.stop()
         if self.audio:
             self.audio.parar()
             self.audio = None
@@ -755,7 +762,7 @@ class MainWindow(QMainWindow):
 
     def analisar(self):
         if self._analisando():
-            self.thread.stop()  # o resultado parcial chega por analise_concluida
+            self.thread_analise.stop()  # o resultado parcial chega por analise_concluida
             return
         proj = self.projeto
         if not proj:
@@ -777,24 +784,24 @@ class MainWindow(QMainWindow):
         self.linha_tempo.atualizar([], [], 0.0)
 
         tempo_real = self.prefs["modo_player"] == "analise"
-        self.thread = AnaliseThread(proj.video, proj.configuracoes(), proj.pasta_saida(), tempo_real)
-        self.thread.frame_signal.connect(self.update_img)
-        self.thread.evento_signal.connect(self.adicionar_evento)
-        self.thread.status_signal.connect(self.statusBar().showMessage)
-        self.thread.linha_tempo_signal.connect(self.linha_tempo.atualizar)
-        self.thread.concluido_signal.connect(self.analise_concluida)
+        self.thread_analise = AnaliseThread(proj.video, proj.configuracoes(), proj.pasta_saida(), tempo_real)
+        self.thread_analise.frame_signal.connect(self.update_img)
+        self.thread_analise.evento_signal.connect(self.adicionar_evento)
+        self.thread_analise.status_signal.connect(self.statusBar().showMessage)
+        self.thread_analise.linha_tempo_signal.connect(self.linha_tempo.atualizar)
+        self.thread_analise.concluido_signal.connect(self.analise_concluida)
         if tempo_real:
             self.audio = PlayerAudio(proj.video, self.prefs)
             self._sync_estado = None
-            self.thread.linha_tempo_signal.connect(self._iniciar_audio)
-        self.thread.start()
+            self.thread_analise.linha_tempo_signal.connect(self._iniciar_audio)
+        self.thread_analise.start()
         self._atualizar_controles()
 
     def _atualizar_tempo(self, t):
         self.lbl_tempo.setText(f"{formatar_tempo(t)} / {formatar_tempo(self.linha_tempo.duracao)}")
 
     def _iniciar_audio(self, *_):
-        self.thread.linha_tempo_signal.disconnect(self._iniciar_audio)
+        self.thread_analise.linha_tempo_signal.disconnect(self._iniciar_audio)
         if self.audio:
             self.audio.tocar()
             self._sync.start()
@@ -822,7 +829,7 @@ class MainWindow(QMainWindow):
         self._sync_estado = (v, agora, ritmo)
 
     def analise_concluida(self, dados):
-        self.thread.wait()  # o sinal sai no fim do run(); garante que a thread terminou
+        self.thread_analise.wait()  # o sinal sai no fim do run(); garante que a thread terminou
         self._sync.stop()
         if self.audio:
             self.audio.parar()

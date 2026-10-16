@@ -1,6 +1,9 @@
 """Detector simulado e rosto neutro compartilhados pelos testes."""
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import compat  # noqa: E402,F401  (antes de qualquer outro import)
 from types import SimpleNamespace
 from unittest import mock
 

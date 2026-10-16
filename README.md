@@ -3,7 +3,7 @@
 Este software utiliza Inteligência Artificial e a arquitetura geométrica do **MediaPipe** para realizar análises comportamentais em arquivos de vídeo baseando-se no sistema **FACS (Facial Action Coding System)**.
 
 ## 🌟 Detecção Inteligente de Inicialização
-- **Modo Gráfico (GUI):** Ativado automaticamente em desktops convencionais. Abre a janela do player em **PyQt6**.
+- **Modo Gráfico (GUI):** Ativado automaticamente em desktops convencionais. Abre a janela do player em **PySide6** (Qt for Python, licença LGPL).
 - **Modo Terminal (CLI):** Ativado em servidores remotos (SSH ou nuvem). Opera inteiramente por comandos de texto.
 
 ## 🎭 Action Units e Emoções
@@ -63,9 +63,20 @@ No fim, o **resumo por pergunta** (`relatorio_perguntas.csv`) mostra para cada p
 python -m unittest discover -s tests -v
 ```
 - `tests/test_aus.py`: cada AU isolada deve gerar só ela mesma. Cobre ainda AU6×AU7 no sorriso, AU25/26/27 pela abertura da boca, pálpebras (AU43/45/46, sem AU7 nem olhar falsos ao piscar), olhar (61–64), lado L/R, cabeça (51–58, sem AU53 falsa com a boca aberta), intensidade e coerência das tabelas com o FACS.
+- `tests/test_gui.py`: a interface sem janela visível (criar, analisar, marcar perguntas, salvar, reabrir, trocar de projeto durante a análise) e a criação do detector **real** do MediaPipe numa thread do PySide6.
 - `tests/test_medo.py`: as regras EMFACS de medo, o caminho blendshapes → AUs → emoção (com calibração) e uma sequência de vídeo simulada, com microexpressão e episódio sustentado.
 
 Os testes usam um detector simulado: verificam a lógica do sistema, não a precisão do MediaPipe em rostos reais. Duas convenções do modelo foram conferidas em foto real: o "Left" dos blendshapes é o lado esquerdo do sujeito, e fechar os olhos também eleva `eyeSquint` e `eyeLookDown`, por isso essas AUs são suprimidas durante a piscada.
+
+## 📜 Licenças
+O sistema é Apache 2.0. As dependências permitem uso comercial e código fechado:
+- **PySide6:** LGPL-3.0.
+- **MediaPipe e OpenCV:** Apache 2.0.
+- **NumPy:** BSD.
+
+A interface usava PyQt6, que é GPL-3.0 e foi trocado pelo PySide6. Ao distribuir o programa, respeite a LGPL do Qt: use as bibliotecas do Qt como bibliotecas dinâmicas e inclua o aviso de licença.
+
+**Python 3.15 + PySide6 6.12:** o `compat.py` desliga os imports adiados (PEP 810), porque o shiboken6 impede que eles sejam resolvidos e o MediaPipe falhava ("'lazy_import' object is not callable"). Ele precisa ser o primeiro import.
 
 ## 🛠️ Instalação das Dependências
 ```bash
