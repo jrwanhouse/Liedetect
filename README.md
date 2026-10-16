@@ -28,7 +28,7 @@ Emoções pelas combinações EMFACS (protótipos e variantes de Ekman & Friesen
 
 **Calibração:** o primeiro segundo com rosto visível define a linha de base neutra do sujeito (os blendshapes têm viés individual). O vídeo deve começar com o rosto em repouso.
 
-**Saídas:** no vídeo, cada AU ativa é marcada no ponto do rosto onde ocorre, na cor da emoção que integra. A interface gráfica mostra uma linha do tempo por emoção, e o modo terminal imprime um resumo dos trechos. Em `trechos_suspeitos/` ficam o `relatorio_emocoes.csv` (início, fim, emoção e combinação de AUs) e um recorte de 5 s de cada episódio.
+**Saídas:** no vídeo, cada AU ativa é marcada no ponto do rosto onde ocorre, na cor da emoção que integra. A interface gráfica mostra uma linha do tempo por emoção, e o modo terminal imprime um resumo dos trechos. Na pasta de saída (`<projeto>_saida/` ou, no terminal sem projeto, `trechos_suspeitos/`) ficam o `relatorio_emocoes.csv` (início, fim, emoção e combinação de AUs) e um recorte de 5 s de cada episódio.
 
 ## ◆ Pontos de Atenção
 > ⚠ **Pontos de atenção indicam variação emocional ou de estresse para revisão humana. NÃO indicam mentira.** Não existe sinal facial confiável de mentira (DePaulo et al., 2003; Bond & DePaulo, 2006). Nervosismo, constrangimento e a própria situação de entrevista produzem os mesmos sinais.
@@ -69,8 +69,28 @@ Na primeira execução o modelo `face_landmarker.task` (MediaPipe Tasks) é baix
 
 ## 🚀 Como Executar
 ```bash
-python main.py
+python main.py                                  # interface gráfica (ou terminal, sem ambiente gráfico)
+python main.py --projeto caso01.liedetect       # abre o projeto na interface gráfica
+python main.py --terminal --projeto caso01.liedetect   # analisa o projeto no terminal e salva o resultado nele
+python main.py --terminal                       # modo terminal interativo, sem projeto
 ```
+
+## 📁 Projetos
+Cada análise é um **projeto** (`.liedetect`), um arquivo JSON legível que guarda:
+- o vídeo, com o caminho relativo ao projeto, para que vídeo e projeto possam ser movidos juntos;
+- as configurações (vídeo de webcam, calibração, recortes);
+- as perguntas;
+- o resultado da análise.
+
+Relatórios, recortes e os dados de cada frame (`quadros.json.gz`, usados pelo player de revisão) ficam em `<projeto>_saida/`, ao lado do arquivo do projeto.
+
+Na interface gráfica, pelo menu **Arquivo**:
+- **Novo projeto** (Ctrl+N): escolha o vídeo e onde salvar o projeto. As configurações iniciais vêm das preferências.
+- **Abrir projeto** (Ctrl+O): se o projeto já foi analisado, a linha do tempo, os eventos, o resumo e o player de revisão voltam sem precisar analisar de novo. Se o vídeo tiver mudado de lugar, o sistema pede para localizá-lo.
+- **Salvar** (Ctrl+S) / **Salvar como** (Ctrl+Shift+S): o "Salvar como" copia junto a pasta de saída. O título mostra `*` quando há alterações, e o sistema avisa antes de fechar ou trocar de projeto.
+- **Configurações do projeto**: webcam, calibração e recortes. Mudanças valem para a próxima análise.
+
+Ao terminar, a análise é salva automaticamente no projeto, e o botão **Parar análise** guarda o resultado parcial. Perguntas marcadas ou importadas depois da análise recalculam o resumo na hora. Para remover uma pergunta, selecione-a na lista e aperte **Delete**.
 
 ## ⚙️ Preferências
 As preferências ficam em um arquivo JSON, usado tanto pela interface gráfica quanto pelo modo terminal. Por padrão é o `preferencias.json`, na pasta do programa, e outro arquivo pode ser indicado com `--config`:
@@ -81,9 +101,9 @@ Na interface gráfica elas são editadas em **Arquivo › Preferências** (Ctrl+
 
 | Chave | Padrão | Uso |
 |---|---|---|
-| `modo_player` | `"analise"` | GUI. `"analise"`: o vídeo é exibido durante a análise, e a velocidade do áudio acompanha o ritmo da análise, mantendo o tom da voz. `"revisao"`: a análise roda primeiro, depois abre um player com áudio em tempo real, play/pausa (Espaço) e navegação por clique na linha do tempo ou duplo clique num evento |
+| `modo_player` | `"analise"` | GUI. `"analise"`: o vídeo é exibido durante a análise, com o áudio acompanhando o ritmo da análise e mantendo o tom da voz. `"revisao"`: a análise roda o mais rápido possível, mostrando só uma prévia. Nos dois modos, ao fim da análise (ou ao abrir um projeto analisado), abre o player de revisão: áudio em tempo real, play/pausa (Espaço) e navegação por clique na linha do tempo ou duplo clique num evento |
 | `audio` / `volume` | `true` / `80` | GUI: liga/desliga o som e define o volume (0–100) |
-| `webcam_espelhada` | `false` | GUI e terminal: valor inicial da opção de vídeo espelhado |
-| `calibracao_segundos` | `1.0` | GUI e terminal: duração da calibração neutra |
-| `pasta_saida` | `"trechos_suspeitos"` | GUI e terminal: onde ficam relatórios e recortes |
-| `salvar_recortes` | `true` | GUI e terminal: grava o recorte de 5 s de cada evento. Desligar deixa a análise mais rápida |
+| `webcam_espelhada` | `false` | Padrão para novos projetos e para o terminal sem projeto |
+| `calibracao_segundos` | `1.0` | Idem: duração da calibração neutra |
+| `pasta_saida` | `"trechos_suspeitos"` | Terminal sem projeto: onde ficam relatórios e recortes |
+| `salvar_recortes` | `true` | Padrão para novos projetos e para o terminal sem projeto: grava o recorte de 5 s de cada evento. Desligar deixa a análise mais rápida |

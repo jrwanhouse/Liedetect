@@ -1,12 +1,15 @@
-"""Interface grafica (PyQt6).
+"""Interface grafica (PyQt6), organizada em projetos.
 
-Dois modos de player, escolhidos em Preferencias:
+Cada projeto guarda video, configuracoes, perguntas e resultados (projeto.py). Dois modos
+de player, escolhidos em Preferencias:
 - "analise": o video e exibido enquanto e analisado, com o audio ajustando a velocidade
   ao ritmo da analise para continuar sincronizado;
-- "revisao": a analise roda primeiro, o mais rapido possivel, e depois abre um player com
-  audio em tempo real, play/pausa e navegacao, redesenhando as AUs a partir dos resultados.
+- "revisao": a analise roda o mais rapido possivel, exibindo so uma previa.
+Nos dois modos, ao fim da analise (ou ao abrir um projeto ja analisado) abre o player de
+revisao, com audio em tempo real, play/pausa e navegacao.
 """
 import os
+import shutil
 import sys
 import time
 
@@ -20,11 +23,15 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialo
                              QPushButton, QSlider, QVBoxLayout, QWidget)
 
 import preferencias
-from atencao import (AVISO, carregar_perguntas, linhas_resumo, resumo_perguntas,
-                     salvar_resumo_perguntas, texto_ponto)
-from facs import (AnalisadorFACS, COR_ATENCAO, COR_EMOCAO, EMOCOES, compactar, desenhar,
-                  formatar_tempo, salvar_relatorio)
-from recortes import registrar_corte
+import projeto as proj_mod
+from analise import executar_analise, resumir_perguntas, separar_resultados
+from atencao import AVISO, carregar_perguntas, linhas_resumo, texto_ponto
+from facs import COR_ATENCAO, COR_EMOCAO, EMOCOES, desenhar, formatar_tempo
+
+FILTRO_PROJETO = f"Projeto Liedetect (*{proj_mod.EXTENSAO})"
+FILTRO_VIDEO = "Videos (*.mp4 *.avi *.mov *.mkv)"
+PAPEL_TEMPO = Qt.ItemDataRole.UserRole
+PAPEL_PERGUNTA = Qt.ItemDataRole.UserRole + 1
 
 
 def bgr_qt(bgr):
@@ -43,6 +50,19 @@ def cor_evento(categoria):
     return CORES_EVENTO.get(categoria, QColor("#FFFFFF"))
 
 
+def descrever_evento(tipo, dado):
+    """(texto, categoria de cor, tempo) de um evento da analise ou de uma pergunta."""
+    if tipo == "emocao":
+        return f"[{formatar_tempo(dado['inicio'])}] {dado['emocao']} — {dado['aus']}", dado["emocao"], dado["inicio"]
+    if tipo == "atencao":
+        return texto_ponto(dado), "atencao", dado["inicio"]
+    if tipo == "alerta":
+        t, texto = dado
+        return f"[{formatar_tempo(t)}] {texto}", "alerta", t
+    t, texto = dado
+    return f"[{formatar_tempo(t)}] ❓ Pergunta: {texto or '-'}", "pergunta", t
+
+
 def para_qimage(frame):
     h, w, ch = frame.shape
     return QImage(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).data, w, h, ch * w,
@@ -52,92 +72,41 @@ def para_qimage(frame):
 class AnaliseThread(QThread):
     frame_signal = pyqtSignal(QImage)
     status_signal = pyqtSignal(str)
-    evento_signal = pyqtSignal(str, str, float)        # texto, categoria, tempo (s)
-    duracao_signal = pyqtSignal(float)
+    evento_signal = pyqtSignal(str, object)              # tipo, dado (ver descrever_evento)
     linha_tempo_signal = pyqtSignal(object, object, float)  # episodios, pontos, posicao (s)
     concluido_signal = pyqtSignal(object)
 
-    def __init__(self, video_path, prefs, espelhado, tempo_real):
+    def __init__(self, video, cfg, pasta, tempo_real):
         super().__init__()
-        self.video_path = video_path
-        self.prefs = prefs
-        self.espelhado = espelhado
-        self.tempo_real = tempo_real  # False: analisa sem pausas e guarda os resultados para revisao
+        self.video, self.cfg, self.pasta = video, cfg, pasta
+        self.tempo_real = tempo_real
         self._run_flag = True
 
     def run(self):
-        cap = cv2.VideoCapture(self.video_path)
-        if not cap.isOpened():
-            self.status_signal.emit("Erro ao abrir o vídeo.")
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.duracao_signal.emit(total / fps)
-        pasta = self.prefs["pasta_saida"]
-        os.makedirs(pasta, exist_ok=True)
-        analisador = AnalisadorFACS(fps, self.espelhado, self.prefs["calibracao_segundos"])
-        resultados = None if self.tempo_real else []
         self.status_signal.emit("Analisando... (F2 marca uma pergunta)" if self.tempo_real
-                                else "Analisando para revisão...")
+                                else "Analisando...")
+        try:
+            dados = executar_analise(self.video, self.cfg, self.pasta,
+                                     ao_evento=self.evento_signal.emit, ao_frame=self._ao_frame,
+                                     continuar=lambda: self._run_flag, tempo_real=self.tempo_real)
+        except OSError as e:
+            self.status_signal.emit(f"Erro: {e}")
+            self.concluido_signal.emit(None)
+            return
+        self.linha_tempo_signal.emit([dict(e) for e in dados["episodios"]],
+                                     [dict(p) for p in dados["pontos"]], dados["duracao"])
+        self.concluido_signal.emit(dados)
 
-        def corte(t, motivo):
-            if self.prefs["salvar_recortes"]:
-                registrar_corte(self.video_path, t, motivo, cortes, pasta)
-
-        frame_idx = 0
-        alertas, cortes = [], set()
-        inicio_relogio = time.monotonic()
-        while self._run_flag:
-            success, frame = cap.read()
-            if not success: break
-
-            res = analisador.processar(frame, frame_idx)
-            frame_idx += 1
-            timestamp_str = formatar_tempo(res.tempo)
-
-            for ep in res.novos_episodios:
-                self.evento_signal.emit(f"[{timestamp_str}] {ep['emocao']} — {ep['aus']}", ep["emocao"], ep["inicio"])
-                corte(res.tempo, f"{ep['emocao']} {ep['aus']}")
-            for p in res.novos_pontos:
-                self.evento_signal.emit(texto_ponto(p), "atencao", p["inicio"])
-                corte(p["inicio"], f"Atencao {p['tipo']}")
-            for alerta in res.alertas:
-                alertas.append((res.tempo, alerta))
-                self.evento_signal.emit(f"[{timestamp_str}] {alerta}", "alerta", res.tempo)
-                corte(res.tempo, alerta)
-
-            if resultados is not None:
-                resultados.append(compactar(res))
-            # na revisao o frame so serve de previa; exibir todos atrasaria a analise
-            if self.tempo_real or frame_idx % 10 == 1:
-                desenhar(frame, res)
-                self.frame_signal.emit(para_qimage(frame))
-                self.linha_tempo_signal.emit([dict(e) for e in analisador.episodios],
-                                             [dict(p) for p in analisador.atencao.pontos], res.tempo)
-                if not self.tempo_real and total:
-                    self.status_signal.emit(f"Analisando para revisão... {100 * frame_idx / total:.0f}%")
-
-            if self.tempo_real:
-                # acompanha o tempo real; se o processamento atrasar, segue sem pausa
-                atraso = frame_idx / fps - (time.monotonic() - inicio_relogio)
-                if atraso > 0:
-                    self.msleep(int(atraso * 1000))
-
-        cap.release()
-        for p in analisador.finalizar():
-            self.evento_signal.emit(texto_ponto(p), "atencao", p["inicio"])
-        analisador.close()
-        relatorio = os.path.join(pasta, "relatorio_emocoes.csv")
-        salvar_relatorio(relatorio, analisador.episodios, alertas, analisador.atencao.pontos)
+    def _ao_frame(self, frame_idx, total, frame, res, analisador):
+        # sem tempo real o frame so serve de previa; exibir todos atrasaria a analise
+        if not (self.tempo_real or frame_idx % 10 == 1):
+            return
+        desenhar(frame, res)
+        self.frame_signal.emit(para_qimage(frame))
         self.linha_tempo_signal.emit([dict(e) for e in analisador.episodios],
-                                     [dict(p) for p in analisador.atencao.pontos], frame_idx / fps)
-        self.concluido_signal.emit({
-            "video": self.video_path, "fps": fps, "duracao": frame_idx / fps, "pasta": pasta,
-            "espelhado": self.espelhado, "episodios": analisador.episodios,
-            "pontos": analisador.atencao.pontos, "tempos_piscadas": analisador.atencao.tempos_piscadas,
-            "resultados": resultados, "relatorio": relatorio,
-        })
+                                     [dict(p) for p in analisador.atencao.pontos], res.tempo)
+        if not self.tempo_real and total:
+            self.status_signal.emit(f"Analisando... {100 * frame_idx / total:.0f}%")
 
     def stop(self):
         self._run_flag = False
@@ -212,13 +181,13 @@ class PlayerRevisao(QObject):
     posicao_signal = pyqtSignal(float)
     tocando_signal = pyqtSignal(bool)
 
-    def __init__(self, dados, prefs):
+    def __init__(self, video, fps, duracao, resultados, prefs):
         super().__init__()
-        self.dados = dados
-        self.resultados = dados["resultados"]
-        self.fps = dados["fps"]
-        self.cap = cv2.VideoCapture(dados["video"])
-        self.audio = PlayerAudio(dados["video"], prefs)
+        self.resultados = resultados
+        self.fps = fps
+        self.duracao = duracao
+        self.cap = cv2.VideoCapture(video)
+        self.audio = PlayerAudio(video, prefs)
         self.ultimo = -1
         self.tocando = False
         self.timer = QTimer(self)
@@ -234,7 +203,7 @@ class PlayerRevisao(QObject):
         if self.tocando:
             self.pausar()
         else:
-            if self.posicao() >= self.dados["duracao"] - 1 / self.fps:
+            if self.posicao() >= self.duracao - 1 / self.fps:
                 self.ir_para(0.0)
             self.audio.tocar()
             self.tocando = True
@@ -246,7 +215,7 @@ class PlayerRevisao(QObject):
         self.tocando_signal.emit(False)
 
     def ir_para(self, segundos):
-        segundos = min(max(0.0, segundos), self.dados["duracao"])
+        segundos = min(max(0.0, segundos), self.duracao)
         self.audio.posicionar(segundos)
         self._mostrar(segundos)
 
@@ -254,9 +223,9 @@ class PlayerRevisao(QObject):
         if not self.tocando:
             return
         t = self.audio.posicao()
-        if t >= self.dados["duracao"]:
+        if t >= self.duracao:
             self.pausar()
-            t = self.dados["duracao"]
+            t = self.duracao
         self._mostrar(t)
 
     def _mostrar(self, t):
@@ -272,9 +241,10 @@ class PlayerRevisao(QObject):
         if not ok:
             return
         self.ultimo = idx
-        if self.dados["espelhado"]:
+        res = self.resultados[idx]
+        if res.espelhado:
             frame = cv2.flip(frame, 1)
-        desenhar(frame, self.resultados[idx])
+        desenhar(frame, res)
         self.frame_signal.emit(para_qimage(frame))
         self.posicao_signal.emit(idx / self.fps)
 
@@ -289,10 +259,10 @@ class LinhaDoTempo(QWidget):
     ALTURA_FAIXA, LARGURA_ROTULO, TOPO = 18, 90, 14
     clicado = pyqtSignal(float)
 
-    def __init__(self, perguntas):
+    def __init__(self):
         super().__init__()
         self.duracao, self.posicao, self.episodios, self.pontos = 0.0, 0.0, [], []
-        self.perguntas = perguntas
+        self.perguntas = []
         self.setMinimumHeight(self.TOPO + self.ALTURA_FAIXA * (len(EMOCOES) + 1) + 4)
 
     def atualizar(self, episodios, pontos, posicao):
@@ -336,6 +306,30 @@ class LinhaDoTempo(QWidget):
         p.end()
 
 
+def _campos_analise(form, webcam, calibracao, recortes, rotulo_webcam):
+    """Campos de configuracao de analise, comuns as preferencias e ao projeto."""
+    chk_webcam = QCheckBox(rotulo_webcam)
+    chk_webcam.setChecked(webcam)
+    form.addRow("", chk_webcam)
+    spn_calibracao = QDoubleSpinBox()
+    spn_calibracao.setRange(0.0, 10.0)
+    spn_calibracao.setSingleStep(0.5)
+    spn_calibracao.setSuffix(" s")
+    spn_calibracao.setValue(calibracao)
+    form.addRow("Calibração neutra:", spn_calibracao)
+    chk_recortes = QCheckBox("Salvar recorte de 5 s de cada evento")
+    chk_recortes.setChecked(recortes)
+    form.addRow("", chk_recortes)
+    return chk_webcam, spn_calibracao, chk_recortes
+
+
+def _botoes(dialogo, form):
+    botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    botoes.accepted.connect(dialogo.accept)
+    botoes.rejected.connect(dialogo.reject)
+    form.addRow(botoes)
+
+
 class DialogoPreferencias(QDialog):
     def __init__(self, prefs, caminho, parent=None):
         super().__init__(parent)
@@ -347,7 +341,6 @@ class DialogoPreferencias(QDialog):
             self.cmb_modo.addItem(nome, chave)
         self.cmb_modo.setCurrentIndex(self.cmb_modo.findData(prefs["modo_player"]))
         form.addRow("Modo do player:", self.cmb_modo)
-
         self.chk_audio = QCheckBox("Reproduzir áudio")
         self.chk_audio.setChecked(prefs["audio"])
         form.addRow("", self.chk_audio)
@@ -356,17 +349,12 @@ class DialogoPreferencias(QDialog):
         self.sld_volume.setValue(int(prefs["volume"]))
         form.addRow("Volume:", self.sld_volume)
 
-        self.chk_webcam = QCheckBox("Marcar 'vídeo de webcam (espelhado)' por padrão")
-        self.chk_webcam.setChecked(prefs["webcam_espelhada"])
-        form.addRow("", self.chk_webcam)
+        form.addRow(QLabel("<b>Padrões para novos projetos</b>"))
+        self.chk_webcam, self.spn_calibracao, self.chk_recortes = _campos_analise(
+            form, prefs["webcam_espelhada"], prefs["calibracao_segundos"], prefs["salvar_recortes"],
+            "Vídeo de webcam (espelhado)")
 
-        self.spn_calibracao = QDoubleSpinBox()
-        self.spn_calibracao.setRange(0.0, 10.0)
-        self.spn_calibracao.setSingleStep(0.5)
-        self.spn_calibracao.setSuffix(" s")
-        self.spn_calibracao.setValue(prefs["calibracao_segundos"])
-        form.addRow("Calibração neutra:", self.spn_calibracao)
-
+        form.addRow(QLabel("<b>Modo terminal sem projeto</b>"))
         pasta = QHBoxLayout()
         self.txt_pasta = QLineEdit(prefs["pasta_saida"])
         btn_pasta = QPushButton("...")
@@ -375,17 +363,10 @@ class DialogoPreferencias(QDialog):
         pasta.addWidget(btn_pasta)
         form.addRow("Pasta de saída:", pasta)
 
-        self.chk_recortes = QCheckBox("Salvar recorte de 5 s de cada evento")
-        self.chk_recortes.setChecked(prefs["salvar_recortes"])
-        form.addRow("", self.chk_recortes)
-
         arquivo = QLabel(f"Arquivo: {caminho}")
         arquivo.setStyleSheet("color: #999999; font-size: 11px;")
         form.addRow(arquivo)
-        botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        botoes.accepted.connect(self.accept)
-        botoes.rejected.connect(self.reject)
-        form.addRow(botoes)
+        _botoes(self, form)
 
     def _escolher_pasta(self):
         pasta = QFileDialog.getExistingDirectory(self, "Pasta de saída", self.txt_pasta.text())
@@ -404,34 +385,70 @@ class DialogoPreferencias(QDialog):
         }
 
 
+class DialogoProjeto(QDialog):
+    def __init__(self, proj, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Configurações do projeto — {proj.nome}")
+        form = QFormLayout(self)
+        form.addRow("Vídeo:", QLabel(proj.video))
+        form.addRow("Saída:", QLabel(proj.pasta_saida()))
+        self.chk_webcam, self.spn_calibracao, self.chk_recortes = _campos_analise(
+            form, proj.webcam_espelhada, proj.calibracao_segundos, proj.salvar_recortes,
+            "Vídeo de webcam (imagem espelhada) — corrigir lados das AUs")
+        if proj.analise:
+            nota = QLabel("Mudanças valem para a próxima análise (Analisar novamente).")
+            nota.setStyleSheet("color: #FFD180;")
+            form.addRow(nota)
+        _botoes(self, form)
+
+    def valores(self):
+        return {"webcam_espelhada": self.chk_webcam.isChecked(),
+                "calibracao_segundos": self.spn_calibracao.value(),
+                "salvar_recortes": self.chk_recortes.isChecked()}
+
+
 class MainWindow(QMainWindow):
     def __init__(self, prefs, caminho_prefs):
         super().__init__()
         self.prefs = prefs
         self.caminho_prefs = caminho_prefs
-        self.setWindowTitle("Detector Forense - Modo Grafico")
         self.setGeometry(100, 100, 1280, 820)
         self.setStyleSheet("background-color: #121212; color: #FFFFFF;")
-        self.perguntas = []   # (tempo s, texto); opcional
+        self.projeto = None   # projeto aberto
         self.thread = None    # analise em andamento
-        self.audio = None     # audio do modo "analise"
-        self.revisao = None   # player do modo "revisao"
-        self.dados = None     # resultado da ultima analise concluida
+        self.audio = None     # audio durante a analise em tempo real
+        self.revisao = None   # player de revisao
         self.initUI()
+        self._atualizar_titulo()
 
     def initUI(self):
         menu = self.menuBar().addMenu("Arquivo")
-        acao_prefs = QAction("Preferências...", self)
-        acao_prefs.setShortcut(QKeySequence("Ctrl+,"))
-        acao_prefs.triggered.connect(self.abrir_preferencias)
-        menu.addAction(acao_prefs)
-        acao_sair = QAction("Sair", self)
-        acao_sair.triggered.connect(self.close)
-        menu.addAction(acao_sair)
+        for nome, atalho, funcao in [
+            ("Novo projeto...", "Ctrl+N", self.novo_projeto),
+            ("Abrir projeto...", "Ctrl+O", self.abrir_projeto),
+            ("Salvar projeto", "Ctrl+S", self.salvar_projeto),
+            ("Salvar projeto como...", "Ctrl+Shift+S", self.salvar_projeto_como),
+            (None, None, None),
+            ("Configurações do projeto...", None, self.configurar_projeto),
+            ("Preferências...", "Ctrl+,", self.abrir_preferencias),
+            (None, None, None),
+            ("Sair", None, self.close),
+        ]:
+            if nome is None:
+                menu.addSeparator()
+                continue
+            acao = QAction(nome, self)
+            if atalho:
+                acao.setShortcut(QKeySequence(atalho))
+            acao.triggered.connect(lambda _=False, f=funcao: f())
+            menu.addAction(acao)
 
         layout = QHBoxLayout()
         left = QVBoxLayout()
-        self.video_label = QLabel("Nenhum video carregado.")
+        self.lbl_projeto = QLabel()
+        self.lbl_projeto.setStyleSheet("color: #BBBBBB;")
+        left.addWidget(self.lbl_projeto)
+        self.video_label = QLabel("Crie um projeto (Ctrl+N) ou abra um existente (Ctrl+O).")
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setStyleSheet("background-color: #1E1E1E; border-radius: 5px;")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -440,7 +457,6 @@ class MainWindow(QMainWindow):
         controles = QHBoxLayout()
         self.btn_play = QPushButton("▶ Play")
         self.btn_play.clicked.connect(self.alternar_play)
-        self.btn_play.setEnabled(False)
         self.lbl_tempo = QLabel("00:00 / 00:00")
         controles.addWidget(self.btn_play)
         controles.addWidget(self.lbl_tempo)
@@ -451,7 +467,7 @@ class MainWindow(QMainWindow):
         left.addLayout(controles)
         QShortcut(QKeySequence("Space"), self, self._atalho_play)
 
-        self.linha_tempo = LinhaDoTempo(self.perguntas)
+        self.linha_tempo = LinhaDoTempo()
         self.linha_tempo.clicado.connect(self.ir_para)
         left.addWidget(self.linha_tempo)
 
@@ -470,13 +486,13 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F2"), self, self.marcar_pergunta)
 
         self.chk_webcam = QCheckBox("Vídeo de webcam (imagem espelhada) — corrigir lados das AUs")
-        self.chk_webcam.setChecked(self.prefs["webcam_espelhada"])
+        self.chk_webcam.toggled.connect(self._webcam_alterada)
         left.addWidget(self.chk_webcam)
 
-        self.btn_open = QPushButton("Selecionar Video")
-        self.btn_open.setStyleSheet("background-color: #007ACC; padding: 10px; font-weight: bold;")
-        self.btn_open.clicked.connect(self.open_file)
-        left.addWidget(self.btn_open)
+        self.btn_analisar = QPushButton("Analisar")
+        self.btn_analisar.setStyleSheet("background-color: #007ACC; padding: 10px; font-weight: bold;")
+        self.btn_analisar.clicked.connect(self.analisar)
+        left.addWidget(self.btn_analisar)
 
         right = QVBoxLayout()
         self.list_alerts = QListWidget()
@@ -484,6 +500,11 @@ class MainWindow(QMainWindow):
         self.list_alerts.setWordWrap(True)
         self.list_alerts.itemDoubleClicked.connect(self._ir_para_item)
         right.addWidget(self.list_alerts, stretch=2)
+        dica = QLabel("Duplo clique: ir ao trecho · Delete: remover pergunta selecionada")
+        dica.setStyleSheet("color: #888888; font-size: 11px;")
+        right.addWidget(dica)
+        QShortcut(QKeySequence("Delete"), self.list_alerts, self.remover_pergunta,
+                  context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
         right.addWidget(QLabel("Resumo por pergunta"))
         self.list_resumo = QListWidget()
         self.list_resumo.setStyleSheet("background-color: #1E1E1E;")
@@ -503,6 +524,205 @@ class MainWindow(QMainWindow):
         self._sync = QTimer(self)
         self._sync.setInterval(250)
         self._sync.timeout.connect(self._sincronizar_audio)
+        self._atualizar_controles()
+
+    # --- estado da janela ---
+    def _analisando(self):
+        return self.thread is not None and self.thread.isRunning()
+
+    def _atualizar_titulo(self):
+        titulo = "Detector Forense"
+        if self.projeto:
+            titulo += f" — {self.projeto.nome}{' *' if self.projeto.modificado else ''}"
+            self.lbl_projeto.setText(f"Projeto: {self.projeto.caminho}   |   Vídeo: {self.projeto.video}")
+        else:
+            self.lbl_projeto.setText("Nenhum projeto aberto")
+        self.setWindowTitle(titulo)
+
+    def _atualizar_controles(self):
+        tem = self.projeto is not None
+        analisando = self._analisando()
+        self.btn_analisar.setEnabled(tem)
+        self.btn_analisar.setText("■ Parar análise" if analisando else
+                                  ("Analisar novamente" if tem and self.projeto.analise else "Analisar"))
+        for w in (self.btn_marcar, self.btn_importar, self.txt_pergunta, self.chk_webcam):
+            w.setEnabled(tem)
+        self.chk_webcam.setEnabled(tem and not analisando)
+        self.btn_play.setEnabled(self.revisao is not None)
+        if self.revisao is None:
+            self.btn_play.setText("▶ Play")
+
+    def _modificado(self):
+        if self.projeto:
+            self.projeto.modificado = True
+            self._atualizar_titulo()
+
+    def _atualizar_rotulo_modo(self):
+        self.lbl_modo.setText(f"Player: {preferencias.MODOS_PLAYER[self.prefs['modo_player']]}")
+
+    # --- projeto ---
+    def _confirmar_descarte(self):
+        """True se pode seguir (salvo, descartado ou sem alteracoes)."""
+        if not (self.projeto and self.projeto.modificado):
+            return True
+        botao = QMessageBox.question(
+            self, "Projeto alterado", f"Salvar as alterações do projeto '{self.projeto.nome}'?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Save)
+        if botao == QMessageBox.StandardButton.Save:
+            return self.salvar_projeto()
+        return botao == QMessageBox.StandardButton.Discard
+
+    def _caminho_projeto(self, titulo, sugestao):
+        caminho, _ = QFileDialog.getSaveFileName(self, titulo, sugestao, FILTRO_PROJETO)
+        if caminho and not caminho.lower().endswith(proj_mod.EXTENSAO):
+            caminho += proj_mod.EXTENSAO
+        return caminho
+
+    def novo_projeto(self):
+        if not self._confirmar_descarte():
+            return
+        video, _ = QFileDialog.getOpenFileName(self, "Vídeo do novo projeto", "", FILTRO_VIDEO)
+        if not video:
+            return
+        caminho = self._caminho_projeto("Salvar novo projeto", os.path.splitext(video)[0] + proj_mod.EXTENSAO)
+        if not caminho:
+            return
+        proj = proj_mod.novo(video, self.prefs, caminho)
+        try:
+            proj_mod.salvar(proj)
+        except OSError as e:
+            QMessageBox.warning(self, "Novo projeto", f"Não foi possível criar o projeto: {e}")
+            return
+        self.carregar_projeto(proj)
+        self.statusBar().showMessage("Projeto criado. Importe ou marque perguntas se quiser e clique em Analisar.")
+
+    def abrir_projeto(self, caminho=None):
+        if not self._confirmar_descarte():
+            return
+        if not caminho:
+            caminho, _ = QFileDialog.getOpenFileName(self, "Abrir projeto", "", FILTRO_PROJETO)
+            if not caminho:
+                return
+        try:
+            proj = proj_mod.abrir(caminho)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            QMessageBox.warning(self, "Abrir projeto", f"Não foi possível abrir '{caminho}':\n{e}")
+            return
+        if not os.path.exists(proj.video):
+            QMessageBox.information(self, "Vídeo não encontrado",
+                                    f"O vídeo do projeto não foi encontrado:\n{proj.video}\n\nIndique onde ele está.")
+            video, _ = QFileDialog.getOpenFileName(self, "Localizar vídeo", "", FILTRO_VIDEO)
+            if video:
+                proj.video = os.path.abspath(video)
+                proj.modificado = True
+        self.carregar_projeto(proj)
+        self.statusBar().showMessage(f"Projeto aberto: {proj.caminho}")
+
+    def carregar_projeto(self, proj):
+        self._encerrar()
+        self.projeto = proj
+        self.linha_tempo.perguntas = proj.perguntas
+        self.chk_webcam.blockSignals(True)
+        self.chk_webcam.setChecked(proj.webcam_espelhada)
+        self.chk_webcam.blockSignals(False)
+        self.list_alerts.clear()
+        self.list_resumo.clear()
+        self.video_label.clear()
+        self.video_label.setText("Vídeo não encontrado." if not os.path.exists(proj.video) else "")
+
+        if proj.analise:
+            a = proj.analise
+            self.linha_tempo.duracao = a["duracao"]
+            self.linha_tempo.atualizar(a["episodios"], a["pontos"], 0.0)
+            self._preencher_eventos()
+            self.atualizar_resumo()
+            self._abrir_revisao()
+        else:
+            self.linha_tempo.duracao = self._duracao_video(proj.video)
+            self.linha_tempo.atualizar([], [], 0.0)
+            for pergunta in sorted(proj.perguntas):
+                self.adicionar_evento("pergunta", pergunta)
+            self._mostrar_primeiro_frame(proj.video)
+        self._atualizar_tempo(0.0)
+        self._atualizar_titulo()
+        self._atualizar_controles()
+
+    def _duracao_video(self, video):
+        cap = cv2.VideoCapture(video)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        duracao = cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps
+        cap.release()
+        return max(duracao, 0.0)
+
+    def _mostrar_primeiro_frame(self, video):
+        cap = cv2.VideoCapture(video)
+        ok, frame = cap.read()
+        cap.release()
+        if ok:
+            if self.projeto.webcam_espelhada:
+                frame = cv2.flip(frame, 1)
+            self.update_img(para_qimage(frame))
+
+    def _preencher_eventos(self):
+        """Reconstroi a lista de eventos a partir da analise salva e das perguntas."""
+        a = self.projeto.analise
+        eventos = ([("emocao", e) for e in a["episodios"]] + [("atencao", p) for p in a["pontos"]]
+                   + [("alerta", tuple(al)) for al in a["alertas"]]
+                   + [("pergunta", q) for q in self.projeto.perguntas])
+        for tipo, dado in sorted(eventos, key=lambda ev: descrever_evento(*ev)[2]):
+            self.adicionar_evento(tipo, dado)
+
+    def salvar_projeto(self):
+        if not self.projeto:
+            return False
+        try:
+            proj_mod.salvar(self.projeto)
+        except OSError as e:
+            QMessageBox.warning(self, "Salvar projeto", f"Não foi possível salvar: {e}")
+            return False
+        self._atualizar_titulo()
+        self.statusBar().showMessage(f"Projeto salvo: {self.projeto.caminho}")
+        return True
+
+    def salvar_projeto_como(self):
+        if not self.projeto:
+            return
+        caminho = self._caminho_projeto("Salvar projeto como", self.projeto.caminho)
+        if not caminho:
+            return
+        saida_anterior = self.projeto.pasta_saida()
+        self.projeto.caminho = os.path.abspath(caminho)
+        if os.path.isdir(saida_anterior) and saida_anterior != self.projeto.pasta_saida():
+            try:  # relatorios e recortes acompanham o projeto
+                shutil.copytree(saida_anterior, self.projeto.pasta_saida(), dirs_exist_ok=True)
+            except OSError as e:
+                QMessageBox.warning(self, "Salvar projeto como", f"Relatórios e recortes não foram copiados: {e}")
+        self.salvar_projeto()
+
+    def configurar_projeto(self):
+        if not self.projeto:
+            self.statusBar().showMessage("Nenhum projeto aberto.")
+            return
+        dialogo = DialogoProjeto(self.projeto, self)
+        if dialogo.exec() != QDialog.DialogCode.Accepted:
+            return
+        valores = dialogo.valores()
+        if valores != self.projeto.configuracoes():
+            self.projeto.webcam_espelhada = valores["webcam_espelhada"]
+            self.projeto.calibracao_segundos = valores["calibracao_segundos"]
+            self.projeto.salvar_recortes = valores["salvar_recortes"]
+            self.chk_webcam.blockSignals(True)
+            self.chk_webcam.setChecked(self.projeto.webcam_espelhada)
+            self.chk_webcam.blockSignals(False)
+            self._modificado()
+
+    def _webcam_alterada(self, marcado):
+        if self.projeto and self.projeto.webcam_espelhada != marcado:
+            self.projeto.webcam_espelhada = marcado
+            self._modificado()
+            if self.projeto.analise:
+                self.statusBar().showMessage("Configuração alterada: vale para a próxima análise (Analisar novamente).")
 
     # --- preferencias ---
     def abrir_preferencias(self):
@@ -512,23 +732,19 @@ class MainWindow(QMainWindow):
         self.prefs.update(dialogo.valores())
         try:
             preferencias.salvar(self.prefs, self.caminho_prefs)
-            self.statusBar().showMessage(f"Preferências salvas em {self.caminho_prefs}. "
-                                         "O modo do player vale a partir do próximo vídeo.")
+            self.statusBar().showMessage(f"Preferências salvas em {self.caminho_prefs}.")
         except OSError as e:
             QMessageBox.warning(self, "Preferências", f"Não foi possível salvar: {e}")
-        self.chk_webcam.setChecked(self.prefs["webcam_espelhada"])
         for player in (self.audio, self.revisao and self.revisao.audio):
             if player:
                 player.aplicar_prefs(self.prefs)
         self._atualizar_rotulo_modo()
 
-    def _atualizar_rotulo_modo(self):
-        self.lbl_modo.setText(f"Player: {preferencias.MODOS_PLAYER[self.prefs['modo_player']]}")
-
-    # --- video ---
+    # --- analise ---
     def _encerrar(self):
         self._sync.stop()
-        if self.thread is not None and self.thread.isRunning():
+        if self._analisando():
+            self.thread.blockSignals(True)  # o resultado nao pertence mais a janela
             self.thread.stop()
         if self.audio:
             self.audio.parar()
@@ -536,42 +752,43 @@ class MainWindow(QMainWindow):
         if self.revisao:
             self.revisao.fechar()
             self.revisao = None
-        self.btn_play.setEnabled(False)
 
-    def open_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Abrir Video", "", "Videos (*.mp4 *.avi)")
-        if not file_name:
+    def analisar(self):
+        if self._analisando():
+            self.thread.stop()  # o resultado parcial chega por analise_concluida
             return
-        if self.perguntas and self.dados is not None:
-            manter = QMessageBox.question(
-                self, "Perguntas", f"Manter as {len(self.perguntas)} pergunta(s) do vídeo anterior?",
-                defaultButton=QMessageBox.StandardButton.No)
-            if manter != QMessageBox.StandardButton.Yes:
-                self.perguntas.clear()
+        proj = self.projeto
+        if not proj:
+            return
+        if not os.path.exists(proj.video):
+            QMessageBox.warning(self, "Analisar", f"Vídeo não encontrado:\n{proj.video}")
+            return
+        if proj.analise:
+            botao = QMessageBox.question(self, "Analisar novamente",
+                                         "Substituir a análise atual do projeto? As perguntas são mantidas.")
+            if botao != QMessageBox.StandardButton.Yes:
+                return
         self._encerrar()
-        self.dados = None
         self.list_alerts.clear()
         self.list_resumo.clear()
-        for t, texto in sorted(self.perguntas):
-            self.adicionar_evento(f"[{formatar_tempo(t)}] ❓ Pergunta: {texto or '-'}", "pergunta", t)
+        for pergunta in sorted(proj.perguntas):
+            self.adicionar_evento("pergunta", pergunta)
+        self.linha_tempo.duracao = self._duracao_video(proj.video)
+        self.linha_tempo.atualizar([], [], 0.0)
 
         tempo_real = self.prefs["modo_player"] == "analise"
-        self.thread = AnaliseThread(file_name, dict(self.prefs), self.chk_webcam.isChecked(), tempo_real)
+        self.thread = AnaliseThread(proj.video, proj.configuracoes(), proj.pasta_saida(), tempo_real)
         self.thread.frame_signal.connect(self.update_img)
         self.thread.evento_signal.connect(self.adicionar_evento)
         self.thread.status_signal.connect(self.statusBar().showMessage)
-        self.thread.duracao_signal.connect(self._definir_duracao)
         self.thread.linha_tempo_signal.connect(self.linha_tempo.atualizar)
         self.thread.concluido_signal.connect(self.analise_concluida)
         if tempo_real:
-            self.audio = PlayerAudio(file_name, self.prefs)
+            self.audio = PlayerAudio(proj.video, self.prefs)
             self._sync_estado = None
             self.thread.linha_tempo_signal.connect(self._iniciar_audio)
         self.thread.start()
-
-    def _definir_duracao(self, duracao):
-        self.linha_tempo.duracao = duracao
-        self._atualizar_tempo(0.0)
+        self._atualizar_controles()
 
     def _atualizar_tempo(self, t):
         self.lbl_tempo.setText(f"{formatar_tempo(t)} / {formatar_tempo(self.linha_tempo.duracao)}")
@@ -605,23 +822,37 @@ class MainWindow(QMainWindow):
         self._sync_estado = (v, agora, ritmo)
 
     def analise_concluida(self, dados):
-        self.dados = dados
+        self.thread.wait()  # o sinal sai no fim do run(); garante que a thread terminou
         self._sync.stop()
         if self.audio:
             self.audio.parar()
             self.audio = None
+        if dados is None:  # erro ao abrir o video
+            self._atualizar_controles()
+            return
+        proj = self.projeto
+        proj.analise, proj.resultados = separar_resultados(dados)
+        self.linha_tempo.duracao = proj.analise["duracao"]
         self.atualizar_resumo()
-        status = f"Análise concluída. Relatório: {dados['relatorio']}"
-        if dados["resultados"] is not None and dados["resultados"]:
-            self.revisao = PlayerRevisao(dados, self.prefs)
-            self.revisao.frame_signal.connect(self.update_img)
-            self.revisao.posicao_signal.connect(self.linha_tempo.definir_posicao)
-            self.revisao.posicao_signal.connect(self._atualizar_tempo)
-            self.revisao.tocando_signal.connect(
-                lambda tocando: self.btn_play.setText("⏸ Pausa" if tocando else "▶ Play"))
-            self.btn_play.setEnabled(True)
-            status += " | Revisão: Espaço = play/pausa; clique na linha do tempo ou dê duplo clique num evento para navegar."
-        self.statusBar().showMessage(status)
+        self._abrir_revisao()
+        status = "Análise concluída" if proj.analise["completa"] else "Análise interrompida (resultado parcial)"
+        if self.salvar_projeto():  # analise e cara: salva automaticamente
+            status += " e salva no projeto"
+        self.statusBar().showMessage(f"{status}. Espaço = play/pausa; clique na linha do tempo para navegar.")
+        self._atualizar_controles()
+
+    def _abrir_revisao(self):
+        proj = self.projeto
+        if not (proj and proj.analise and proj.resultados and os.path.exists(proj.video)):
+            return
+        self.revisao = PlayerRevisao(proj.video, proj.analise["fps"], proj.analise["duracao"],
+                                     proj.resultados, self.prefs)
+        self.revisao.frame_signal.connect(self.update_img)
+        self.revisao.posicao_signal.connect(self.linha_tempo.definir_posicao)
+        self.revisao.posicao_signal.connect(self._atualizar_tempo)
+        self.revisao.tocando_signal.connect(
+            lambda tocando: self.btn_play.setText("⏸ Pausa" if tocando else "▶ Play"))
+        self.revisao.ir_para(0.0)
 
     def alternar_play(self):
         if self.revisao:
@@ -636,7 +867,7 @@ class MainWindow(QMainWindow):
             self.revisao.ir_para(segundos)
 
     def _ir_para_item(self, item):
-        t = item.data(Qt.ItemDataRole.UserRole)
+        t = item.data(PAPEL_TEMPO)
         if t is not None:
             self.ir_para(t)
 
@@ -644,23 +875,27 @@ class MainWindow(QMainWindow):
     def posicao_atual(self):
         if self.revisao:
             return self.revisao.posicao()
-        if self.thread is not None and self.thread.isRunning():
+        if self._analisando():
             return self.linha_tempo.posicao
         return None
 
     def marcar_pergunta(self):
+        if not self.projeto:
+            return
         tempo = self.posicao_atual()
         if tempo is None:
-            self.statusBar().showMessage("Abra um vídeo para marcar perguntas.")
+            self.statusBar().showMessage("Marque perguntas durante a análise ou no player de revisão; "
+                                         "antes da análise, importe um arquivo de perguntas.")
             return
-        texto = self.txt_pergunta.text().strip()
-        self.perguntas.append((tempo, texto))
+        pergunta = (tempo, self.txt_pergunta.text().strip())
+        self.projeto.perguntas.append(pergunta)
         self.txt_pergunta.clear()
-        self.adicionar_evento(f"[{formatar_tempo(tempo)}] ❓ Pergunta marcada: {texto or '-'}", "pergunta", tempo)
-        self.linha_tempo.update()
-        self.atualizar_resumo()
+        self.adicionar_evento("pergunta", pergunta)
+        self._perguntas_alteradas()
 
     def importar_perguntas(self):
+        if not self.projeto:
+            return
         caminho, _ = QFileDialog.getOpenFileName(self, "Importar perguntas", "",
                                                  "Perguntas (*.csv *.txt);;Todos (*)")
         if not caminho:
@@ -670,36 +905,52 @@ class MainWindow(QMainWindow):
         except OSError as e:
             self.statusBar().showMessage(f"Erro ao ler perguntas: {e}")
             return
-        self.perguntas.extend(novas)
+        self.projeto.perguntas.extend(novas)
+        for pergunta in novas:
+            self.adicionar_evento("pergunta", pergunta)
+        self._perguntas_alteradas()
         self.statusBar().showMessage(f"{len(novas)} pergunta(s) importada(s) de {os.path.basename(caminho)}.")
-        if self.thread is not None:
-            for t, texto in novas:
-                self.adicionar_evento(f"[{formatar_tempo(t)}] ❓ Pergunta importada: {texto or '-'}", "pergunta", t)
+
+    def remover_pergunta(self):
+        item = self.list_alerts.currentItem()
+        pergunta = item.data(PAPEL_PERGUNTA) if item else None
+        if not (self.projeto and pergunta):
+            return
+        pergunta = (pergunta[0], pergunta[1])
+        if pergunta in self.projeto.perguntas:
+            self.projeto.perguntas.remove(pergunta)
+        self.list_alerts.takeItem(self.list_alerts.row(item))
+        self._perguntas_alteradas()
+
+    def _perguntas_alteradas(self):
         self.linha_tempo.update()
+        self._modificado()
         self.atualizar_resumo()
 
     def atualizar_resumo(self):
-        """Recalcula o resumo por pergunta (apos a analise; tambem quando perguntas mudam na revisao)."""
+        """Recalcula o resumo por pergunta a partir da analise do projeto."""
         self.list_resumo.clear()
-        if self.dados is None or not self.perguntas:
+        proj = self.projeto
+        if not (proj and proj.analise and proj.perguntas) or self._analisando():
             return
-        d = self.dados
-        resumo = resumo_perguntas(list(self.perguntas), d["duracao"], d["episodios"], d["pontos"],
-                                  d["tempos_piscadas"])
         try:
-            salvar_resumo_perguntas(os.path.join(d["pasta"], "relatorio_perguntas.csv"), resumo)
+            resumo = resumir_perguntas(proj.perguntas, proj.analise, proj.pasta_saida())
         except OSError as e:
             self.statusBar().showMessage(f"Erro ao salvar resumo: {e}")
+            return
         for (texto, destaque), r in zip(linhas_resumo(resumo), resumo):
             item = QListWidgetItem(texto)
             item.setForeground(cor_evento("destaque" if destaque else "resumo"))
-            item.setData(Qt.ItemDataRole.UserRole, r["inicio"])
+            item.setData(PAPEL_TEMPO, r["inicio"])
             self.list_resumo.addItem(item)
 
-    def adicionar_evento(self, texto, categoria, tempo=None):
+    def adicionar_evento(self, tipo, dado):
+        texto, categoria, tempo = descrever_evento(tipo, dado)
         item = QListWidgetItem(texto)
         item.setForeground(cor_evento(categoria))
-        item.setData(Qt.ItemDataRole.UserRole, tempo)
+        item.setData(PAPEL_TEMPO, tempo)
+        if tipo == "pergunta":
+            item.setData(PAPEL_PERGUNTA, list(dado))
         self.list_alerts.addItem(item)
 
     def update_img(self, img):
@@ -707,12 +958,17 @@ class MainWindow(QMainWindow):
         self.video_label.setPixmap(px)
 
     def closeEvent(self, evento):
+        if not self._confirmar_descarte():
+            evento.ignore()
+            return
         self._encerrar()
         super().closeEvent(evento)
 
 
-def rodar_modo_grafico(prefs, caminho_prefs):
+def rodar_modo_grafico(prefs, caminho_prefs, caminho_projeto=None):
     app = QApplication.instance() or QApplication(sys.argv)
     w = MainWindow(prefs, caminho_prefs)
     w.show()
+    if caminho_projeto:
+        w.abrir_projeto(caminho_projeto)
     sys.exit(app.exec())
