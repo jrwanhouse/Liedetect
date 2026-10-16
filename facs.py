@@ -73,11 +73,14 @@ AUS_SO_PYFEAT = {11: "Aprofundador nasolabial", 24: "Pressor dos labios"}
 NOMES_AU = {au: spec[0] for au, spec in AUS_BLENDSHAPE.items()} | AUS_DERIVADAS | AUS_SO_PYFEAT
 
 # Detectores de AUs e as malhas de pontos que cada um devolve
-MEDIAPIPE, PYFEAT = "mediapipe", "pyfeat"
+MEDIAPIPE, PYFEAT, OPENFACE = "mediapipe", "pyfeat", "openface"
 # AUs do classificador do Py-Feat; olhos (43/45/46) e cabeca (51-58) vem da malha de 68 pontos
 AUS_PYFEAT = [1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 17, 20, 23, 24, 25, 26, 28, 43]
 AUS_MEDIDAS = {MEDIAPIPE: set(NOMES_AU) - set(AUS_SO_PYFEAT),
                PYFEAT: set(AUS_PYFEAT) | {45, 46} | set(range(51, 59))}
+# OpenFace 2.2: intensidade 0-5 dessas AUs (AU28 so presenca); olhos e cabeca pela malha de 68 pontos
+AUS_OPENFACE = [1, 2, 4, 5, 6, 7, 9, 10, 12, 14, 15, 17, 20, 23, 25, 26]
+AUS_MEDIDAS[OPENFACE] = set(AUS_OPENFACE) | {28, 43, 45, 46} | set(range(51, 59))
 MALHA_MEDIAPIPE, MALHA_68 = "mp478", "ibug68"
 
 # AUs do FACS sem sinal correspondente no modelo
@@ -95,13 +98,19 @@ LIMIARES |= {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58, 61, 62, 63, 64)}
 # Py-Feat devolve probabilidades: 0.5 e o corte natural; cabeca e olhos seguem a escala do MediaPipe
 LIMIAR_PYFEAT = 0.5
 LIMIARES_PYFEAT = {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58)} | {43: 0.5, 45: 0.5}
+# OpenFace: score = intensidade/5; ativa a partir de 1 (letra A); AU28 e presenca (0 ou 1)
+LIMIAR_OPENFACE = 0.2
+LIMIARES_OPENFACE = {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58)} | {28: 0.5, 43: 0.5, 45: 0.5}
+# Score da intensidade E: no OpenFace cada ponto da escala 1-5 vira uma letra (1 = A ... 5 = E)
+_TETO_INTENSIDADE = {OPENFACE: 1.2}
 
 # Limiares ajustados pela validacao com codificadores FACS (validacao.py) substituem os padroes
 _PASTA = os.path.dirname(os.path.abspath(__file__))
 ARQUIVO_LIMIARES = os.path.join(_PASTA, "limiares_aus.json")
-ARQUIVOS_LIMIARES = {MEDIAPIPE: ARQUIVO_LIMIARES, PYFEAT: os.path.join(_PASTA, "limiares_aus_pyfeat.json")}
-_LIMIARES_ATIVOS = {MEDIAPIPE: LIMIARES, PYFEAT: LIMIARES_PYFEAT}
-_LIMIAR_BASE = {MEDIAPIPE: LIMIAR_PADRAO, PYFEAT: LIMIAR_PYFEAT}
+ARQUIVOS_LIMIARES = {MEDIAPIPE: ARQUIVO_LIMIARES, PYFEAT: os.path.join(_PASTA, "limiares_aus_pyfeat.json"),
+                     OPENFACE: os.path.join(_PASTA, "limiares_aus_openface.json")}
+_LIMIARES_ATIVOS = {MEDIAPIPE: LIMIARES, PYFEAT: LIMIARES_PYFEAT, OPENFACE: LIMIARES_OPENFACE}
+_LIMIAR_BASE = {MEDIAPIPE: LIMIAR_PADRAO, PYFEAT: LIMIAR_PYFEAT, OPENFACE: LIMIAR_OPENFACE}
 _PADROES = {d: {**{au: _LIMIAR_BASE[d] for au in NOMES_AU}, **lim} for d, lim in _LIMIARES_ATIVOS.items()}
 LIMIARES_PADRAO = _PADROES[MEDIAPIPE]
 
@@ -139,6 +148,7 @@ LIMIARES_AJUSTADOS = {}  # AUs com limiar vindo de limiares_aus.json (MediaPipe)
 LIMIARES_AJUSTADOS_POR_DETECTOR = {}
 carregar_limiares(detector=MEDIAPIPE)
 carregar_limiares(detector=PYFEAT)
+carregar_limiares(detector=OPENFACE)
 
 # Landmarks onde cada AU aparece; AUs bilaterais listam [lado direito do sujeito, lado esquerdo]
 PONTOS_AU = {
@@ -235,7 +245,7 @@ def criar_detector():
 
 def intensidade(score, limiar, teto=1.0):
     passo = (teto - limiar) / 5
-    return "ABCDE"[min(4, int((score - limiar) / passo))]
+    return "ABCDE"[min(4, int((score - limiar) / passo + 1e-9))]  # 1e-9: 0.6-0.2 nao da 0.4 exato
 
 
 def num_au(token):
@@ -412,7 +422,9 @@ class AnalisadorBase:
                     lado = "R"
             if num == 46 and not lado:
                 continue  # os dois olhos meio fechados nao e piscadela
-            teto = limiares[27] if num == 26 and 27 in limiares else 1.0  # a AU26 vai ate onde comeca a AU27
+            teto = _TETO_INTENSIDADE.get(self.detector, 1.0)
+            if num == 26 and 27 in limiares:  # a AU26 vai ate onde comeca a AU27
+                teto = limiares[27]
             aus[num] = AU(score, intensidade(score, limiar, teto), lado)
         return aus
 

@@ -14,10 +14,12 @@ from recortes import registrar_corte
 def criar_analisador(video, cfg, pasta, fps, ao_etapa=None, continuar=None):
     """Analisador do detector configurado; o Py-Feat extrai antes as AUs do video inteiro."""
     detector = cfg.get("detector", facs.MEDIAPIPE)
+    avisar = ao_etapa or (lambda texto: None)
+    if detector == facs.OPENFACE:
+        return _analisador_openface(video, cfg, pasta, fps, avisar, continuar)
     if detector != facs.PYFEAT:
         return AnalisadorFACS(fps, cfg["webcam_espelhada"], cfg["calibracao_segundos"])
     import pyfeat_backend as pf
-    avisar = ao_etapa or (lambda texto: None)
     python = pf.localizar_python(cfg.get("pyfeat_python", ""))
     if not python:
         raise pf.PyFeatIndisponivel("ambiente do Py-Feat nao encontrado (.venv-pyfeat); veja o README")
@@ -40,13 +42,29 @@ def criar_analisador(video, cfg, pasta, fps, ao_etapa=None, continuar=None):
                                pular, cfg.get("emocoes_pyfeat", "modelo"))
 
 
+def _analisador_openface(video, cfg, pasta, fps, avisar, continuar):
+    import openface_backend as of
+    executavel = of.localizar_executavel(cfg.get("openface_exe", ""))
+    if not executavel:
+        raise of.OpenFaceIndisponivel("OpenFace nao encontrado (FeatureExtraction.exe); veja o README")
+    saida = of.caminho_cache(video, pasta, cfg["webcam_espelhada"])
+    if os.path.exists(saida):
+        avisar("OpenFace: reaproveitando a extracao anterior deste video")
+    else:
+        avisar("OpenFace: carregando modelos...")
+        of.extrair(video, saida, executavel, cfg["webcam_espelhada"],
+                   lambda pct, total: avisar(f"OpenFace: {pct}%"), continuar)
+    return of.AnalisadorOpenFace(fps, cfg["webcam_espelhada"], cfg["calibracao_segundos"], of.carregar(saida))
+
+
 def executar_analise(video, cfg, pasta, ao_evento=None, ao_frame=None, continuar=None,
                      tempo_real=False, guardar_quadros=True, ao_etapa=None):
     """Analisa o video e grava relatorio_emocoes.csv (e recortes, se configurado) em `pasta`.
 
     cfg: webcam_espelhada, calibracao_segundos, salvar_recortes e, opcionais, detector
-         ("mediapipe"/"pyfeat"), emocoes_pyfeat, pyfeat_modelo, pyfeat_pular, pyfeat_python.
-    ao_etapa(texto): avisos de etapas longas (extracao do Py-Feat).
+         ("mediapipe"/"pyfeat"/"openface"), emocoes_pyfeat, pyfeat_modelo, pyfeat_pular,
+         pyfeat_python, openface_exe.
+    ao_etapa(texto): avisos de etapas longas (extracao do Py-Feat ou do OpenFace).
     ao_evento(tipo, dado): tipo "emocao" (episodio), "atencao" (ponto) ou "alerta" ((tempo, texto)).
     ao_frame(frame_idx, total, frame, res, analisador): chamado a cada frame analisado.
     continuar(): retornar False interrompe a analise.

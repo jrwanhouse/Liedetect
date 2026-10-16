@@ -22,11 +22,13 @@ PADRAO = {
     "pyfeat_modelo": "v2",
     "pyfeat_pular": 1,
     "pyfeat_python": "",           # vazio: .venv-pyfeat na pasta do programa
+    "openface_exe": "",            # vazio: openface/OpenFace_2.2.0_win_x64 na pasta do programa
 }
 
 DETECTORES = {
     "mediapipe": "MediaPipe (padrão, licença Apache 2.0)",
     "pyfeat": "Py-Feat (modelos treinados com FACS; lento em CPU)",
+    "openface": "OpenFace 2.2 (CMU; AUs com intensidade 0–5; rápido)",
 }
 OPCOES = {"detector": DETECTORES, "emocoes_pyfeat": {"modelo", "emfacs"}, "pyfeat_modelo": {"v2", "v1"}}
 
@@ -49,7 +51,7 @@ def carregar(caminho=ARQUIVO_PADRAO):
         elif isinstance(padrao, (int, float)):
             valido = isinstance(valor, (int, float)) and not isinstance(valor, bool) and valor >= 0
         else:
-            valido = isinstance(valor, str) and (valor or chave == "pyfeat_python")
+            valido = isinstance(valor, str) and (valor or chave in ("pyfeat_python", "openface_exe"))
         if chave == "modo_player":
             valido = valor in MODOS_PLAYER
         if chave in OPCOES:

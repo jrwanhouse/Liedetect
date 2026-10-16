@@ -194,6 +194,18 @@ class FluxoDeProjeto(unittest.TestCase):
         self.janela.ir_para(2.5)  # desenha as AUs na malha de 68 pontos sem erro
         self.assertEqual(self.janela.projeto.resultados[75].malha, facs.MALHA_68)
 
+    def test_projeto_com_openface(self):
+        falso = os.path.join(os.path.dirname(os.path.abspath(__file__)), "falso_openface.py")
+        self.janela.prefs.update(detector="openface", openface_exe=falso)
+        self.novo_projeto("com_openface")
+        self.assertIn("Detector: OpenFace", self.janela.lbl_projeto.text())
+        self.analisar()
+        analise = self.janela.projeto.analise
+        self.assertEqual(analise["detector"], "openface")
+        self.assertEqual([e["emocao"] for e in analise["episodios"]], ["Felicidade"])
+        self.janela.ir_para(2.5)
+        self.assertEqual(self.janela.projeto.resultados[75].malha, facs.MALHA_68)
+
     def test_fechar_com_alteracoes_pergunta_antes(self):
         self.novo_projeto("alterado")
         self.janela.chk_webcam.setChecked(not self.janela.chk_webcam.isChecked())

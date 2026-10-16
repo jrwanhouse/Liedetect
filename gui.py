@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 
 import preferencias
 import projeto as proj_mod
+import openface_backend
 import pyfeat_backend
 import validacao
 from analise import executar_analise, resumir_perguntas, separar_resultados
@@ -94,8 +95,8 @@ class AnaliseThread(QThread):
                                      ao_evento=self.evento_signal.emit, ao_frame=self._ao_frame,
                                      continuar=lambda: self._run_flag, tempo_real=self.tempo_real,
                                      ao_etapa=self.status_signal.emit)
-        except pyfeat_backend.AnaliseInterrompida:
-            self.status_signal.emit("Análise interrompida durante a extração do Py-Feat.")
+        except (pyfeat_backend.AnaliseInterrompida, openface_backend.AnaliseInterrompida):
+            self.status_signal.emit("Análise interrompida durante a extração do detector.")
             self.concluido_signal.emit(None)
             return
         except (OSError, RuntimeError) as e:
@@ -356,7 +357,7 @@ class CamposDetector:
         self.spn_pular.setValue(int(valores["pyfeat_pular"]))
         self.spn_pular.setToolTip("1 = todos os frames. Valores maiores aceleram, mas podem perder microexpressões.")
         form.addRow("Analisar 1 a cada N frames:", self.spn_pular)
-        self.aviso = QLabel(f"ℹ {pyfeat_backend.NOTA_PYFEAT}")
+        self.aviso = QLabel()
         self.aviso.setWordWrap(True)
         self.aviso.setStyleSheet("color: #AAAAAA;")
         form.addRow(self.aviso)
@@ -364,10 +365,12 @@ class CamposDetector:
         self._atualizar()
 
     def _atualizar(self):
-        pyfeat = self.cmb_detector.currentData() == "pyfeat"
+        detector = self.cmb_detector.currentData()
         for w in (self.cmb_emocoes, self.cmb_modelo, self.spn_pular):
-            w.setEnabled(pyfeat)
-        self.aviso.setVisible(pyfeat)
+            w.setEnabled(detector == "pyfeat")
+        nota = {"pyfeat": pyfeat_backend.NOTA_PYFEAT, "openface": openface_backend.NOTA_OPENFACE}.get(detector)
+        self.aviso.setText(f"ℹ {nota}" if nota else "")
+        self.aviso.setVisible(bool(nota))
 
     def valores(self):
         return {"detector": self.cmb_detector.currentData(), "emocoes_pyfeat": self.cmb_emocoes.currentData(),
@@ -419,6 +422,19 @@ class DialogoPreferencias(QDialog):
         self._verificar_python()
         form.addRow("", self.lbl_python)
 
+        openface = QHBoxLayout()
+        self.txt_openface = QLineEdit(prefs["openface_exe"])
+        self.txt_openface.setPlaceholderText(openface_backend.executavel_padrao())
+        btn_openface = QPushButton("...")
+        btn_openface.clicked.connect(self._escolher_openface)
+        openface.addWidget(self.txt_openface)
+        openface.addWidget(btn_openface)
+        form.addRow("FeatureExtraction do OpenFace:", openface)
+        self.lbl_openface = QLabel()
+        self.txt_openface.textChanged.connect(self._verificar_openface)
+        self._verificar_openface()
+        form.addRow("", self.lbl_openface)
+
         form.addRow(QLabel("<b>Modo terminal sem projeto</b>"))
         pasta = QHBoxLayout()
         self.txt_pasta = QLineEdit(prefs["pasta_saida"])
@@ -443,6 +459,17 @@ class DialogoPreferencias(QDialog):
         self.lbl_python.setText(f"✔ {encontrado}" if encontrado else "✖ ambiente do Py-Feat não encontrado (veja o README)")
         self.lbl_python.setStyleSheet(f"color: {'#A5D6A7' if encontrado else '#FF8A80'}; font-size: 11px;")
 
+    def _escolher_openface(self):
+        caminho, _ = QFileDialog.getOpenFileName(self, "FeatureExtraction do OpenFace", "",
+                                                 "FeatureExtraction (FeatureExtraction*)")
+        if caminho:
+            self.txt_openface.setText(caminho)
+
+    def _verificar_openface(self):
+        encontrado = openface_backend.localizar_executavel(self.txt_openface.text().strip())
+        self.lbl_openface.setText(f"✔ {encontrado}" if encontrado else "✖ OpenFace não encontrado (veja o README)")
+        self.lbl_openface.setStyleSheet(f"color: {'#A5D6A7' if encontrado else '#FF8A80'}; font-size: 11px;")
+
     def _escolher_pasta(self):
         pasta = QFileDialog.getExistingDirectory(self, "Pasta de saída", self.txt_pasta.text())
         if pasta:
@@ -458,6 +485,7 @@ class DialogoPreferencias(QDialog):
             "pasta_saida": self.txt_pasta.text().strip() or preferencias.PADRAO["pasta_saida"],
             "salvar_recortes": self.chk_recortes.isChecked(),
             "pyfeat_python": self.txt_python.text().strip(),
+            "openface_exe": self.txt_openface.text().strip(),
             **self.campos_detector.valores(),
         }
 
@@ -666,7 +694,7 @@ class MainWindow(QMainWindow):
         titulo = "Detector Forense"
         if self.projeto:
             titulo += f" — {self.projeto.nome}{' *' if self.projeto.modificado else ''}"
-            detector = "Py-Feat" if self.projeto.detector == "pyfeat" else "MediaPipe"
+            detector = {"pyfeat": "Py-Feat", "openface": "OpenFace"}.get(self.projeto.detector, "MediaPipe")
             self.lbl_projeto.setText(f"Projeto: {self.projeto.caminho}   |   Vídeo: {self.projeto.video}"
                                      f"   |   Detector: {detector}")
         else:
@@ -910,7 +938,7 @@ class MainWindow(QMainWindow):
         self.linha_tempo.atualizar([], [], 0.0)
 
         tempo_real = self.prefs["modo_player"] == "analise"
-        cfg = proj.configuracoes() | {"pyfeat_python": self.prefs["pyfeat_python"]}
+        cfg = proj.configuracoes() | {k: self.prefs[k] for k in ("pyfeat_python", "openface_exe")}
         self.thread_analise = AnaliseThread(proj.video, cfg, proj.pasta_saida(), tempo_real)
         self.thread_analise.frame_signal.connect(self.update_img)
         self.thread_analise.evento_signal.connect(self.adicionar_evento)

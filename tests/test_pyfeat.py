@@ -8,6 +8,7 @@ Rodar: python -m unittest discover -s tests -v
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -163,7 +164,17 @@ class Extracao(unittest.TestCase):
         with mock.patch.dict(os.environ, {"FALSO_MODO": "lento"}):
             with self.assertRaises(pf.AnaliseInterrompida):
                 pf.extrair(self.video, saida, sys.executable, continuar=lambda: next(chamadas, False))
+        time.sleep(3)
         self.assertFalse(os.path.exists(saida))
+
+    def test_cancelar_encerra_o_worker_mesmo_em_silencio(self):
+        # cancelar durante um trecho sem mensagens (ex.: carregando modelos) tem de parar o worker
+        saida = os.path.join(self.tmp.name, "mudo.csv")
+        with mock.patch.dict(os.environ, {"FALSO_MODO": "mudo"}):
+            with self.assertRaises(pf.AnaliseInterrompida):
+                pf.extrair(self.video, saida, sys.executable, continuar=lambda: False)
+        time.sleep(4)
+        self.assertFalse(os.path.exists(saida), "o worker continuou rodando depois de cancelado")
 
     def test_analise_completa_com_pyfeat_e_reaproveitamento(self):
         pasta = os.path.join(self.tmp.name, "saida")

@@ -122,3 +122,19 @@ def linha_pyfeat(aus=None, emocoes=None, abertura=(1.0, 1.0), nariz=(0.0, 0.0), 
 
 NEUTRO_PF = linha_pyfeat()
 FELIZ_PF = linha_pyfeat({6: 0.8, 12: 0.9}, {"happiness": 0.95, "neutral": 0.02})
+
+
+# --- OpenFace: linhas do CSV do FeatureExtraction (intensidade 0-5, malha de 68 pontos em pixels) ---
+AUS_OF = [1, 2, 4, 5, 6, 7, 9, 10, 12, 14, 15, 17, 20, 23, 25, 26]
+
+
+def linha_openface(intensidades=None, au28=0.0, abertura=(1.0, 1.0), nariz=(0.0, 0.0), confianca=0.98, sucesso=1):
+    linha = {"confidence": confianca, "success": sucesso} | {f"AU{au:02d}_r": 0.0 for au in AUS_OF}
+    linha |= {f"AU{au:02d}_r": v for au, v in (intensidades or {}).items()} | {"AU28_c": au28}
+    for i, (x, y) in malha68(abertura, nariz).items():
+        linha[f"x_{i}"], linha[f"y_{i}"] = float(x), float(y)
+    return linha
+
+
+NEUTRO_OF = linha_openface()
+FELIZ_OF = linha_openface({6: 3.5, 12: 4.2})

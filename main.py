@@ -80,6 +80,14 @@ def analisar_no_terminal(video, cfg, pasta, perguntas, guardar_quadros=False):
     print(f"✅ Concluido! Amostras e relatorio em '{pasta}/'.")
     return dados
 
+def nota_do_detector(detector):
+    if detector == "pyfeat":
+        from pyfeat_backend import NOTA_PYFEAT
+        print(f"ℹ {NOTA_PYFEAT}")
+    elif detector == "openface":
+        from openface_backend import NOTA_OPENFACE
+        print(f"ℹ {NOTA_OPENFACE}")
+
 def rodar_modo_terminal(prefs):
     print("\n" + "="*50)
     print("🖥️  MODO TERMINAL DETECTADO (Sem ambiente grafico ativo)")
@@ -104,10 +112,9 @@ def rodar_modo_terminal(prefs):
 
     cfg = {"webcam_espelhada": espelhado, "calibracao_segundos": prefs["calibracao_segundos"],
            "salvar_recortes": prefs["salvar_recortes"]}
-    cfg |= {k: prefs[k] for k in ("detector", "emocoes_pyfeat", "pyfeat_modelo", "pyfeat_pular", "pyfeat_python")}
-    if cfg["detector"] == "pyfeat":
-        from pyfeat_backend import NOTA_PYFEAT
-        print(f"ℹ {NOTA_PYFEAT}")
+    cfg |= {k: prefs[k] for k in ("detector", "emocoes_pyfeat", "pyfeat_modelo", "pyfeat_pular",
+                                  "pyfeat_python", "openface_exe")}
+    nota_do_detector(cfg["detector"])
     try:
         analisar_no_terminal(video_input, cfg, prefs["pasta_saida"], perguntas)
     except (OSError, RuntimeError) as e:
@@ -127,10 +134,8 @@ def analisar_projeto_no_terminal(caminho, prefs):
     if proj.analise:
         print("ℹ️  A analise anterior do projeto sera substituida.")
     try:
-        if proj.detector == "pyfeat":
-            from pyfeat_backend import NOTA_PYFEAT
-            print(f"ℹ {NOTA_PYFEAT}")
-        cfg = proj.configuracoes() | {"pyfeat_python": prefs["pyfeat_python"]}
+        nota_do_detector(proj.detector)
+        cfg = proj.configuracoes() | {k: prefs[k] for k in ("pyfeat_python", "openface_exe")}
         dados = analisar_no_terminal(proj.video, cfg, proj.pasta_saida(), proj.perguntas,
                                      guardar_quadros=True)
     except (OSError, RuntimeError) as e:
