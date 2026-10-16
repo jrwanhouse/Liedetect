@@ -6,6 +6,7 @@ from datetime import datetime
 import cv2
 
 from atencao import resumo_perguntas, salvar_resumo_perguntas
+import facs
 from facs import AnalisadorFACS, compactar, salvar_relatorio
 from recortes import registrar_corte
 
@@ -76,6 +77,7 @@ def executar_analise(video, cfg, pasta, ao_evento=None, ao_frame=None, continuar
         "episodios": analisador.episodios, "pontos": analisador.atencao.pontos,
         "tempos_piscadas": analisador.atencao.tempos_piscadas,
         "alertas": [list(a) for a in alertas],
+        "limiares_ajustados": {str(au): v for au, v in facs.LIMIARES_AJUSTADOS.items()},
         "resultados": resultados if guardar_quadros else None,
     }
 

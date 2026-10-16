@@ -147,6 +147,36 @@ class FluxoDeProjeto(unittest.TestCase):
         segunda.projeto.modificado = False
         segunda.close()
 
+    def test_menu_de_validacao_exporta_e_avalia(self):
+        import validacao
+        self.novo_projeto("validar")
+        self.analisar()
+        pasta = os.path.join(self.tmp.name, "amostra_gui")
+        with mock.patch.object(gui.QInputDialog, "getInt", return_value=(20, True)), \
+             mock.patch.object(QFileDialog, "getExistingDirectory", return_value=pasta), \
+             mock.patch.object(QMessageBox, "information") as info:
+            self.janela.exportar_validacao()
+        info.assert_called_once()
+        self.assertTrue(os.path.exists(os.path.join(pasta, validacao.ARQUIVO_MODELO)))
+
+        planilha = os.path.join(pasta, "codificador.csv")
+        with open(os.path.join(pasta, validacao.ARQUIVO_MODELO), encoding="utf-8-sig") as f, \
+             open(planilha, "w", encoding="utf-8-sig") as g:
+            g.write(f.read())
+        dialogos = []
+        with mock.patch.object(QFileDialog, "getExistingDirectory", return_value=pasta), \
+             mock.patch.object(QFileDialog, "getOpenFileNames", return_value=([planilha], "")), \
+             mock.patch.object(gui.DialogoValidacao, "exec", lambda d: dialogos.append(d)):
+            self.janela.avaliar_validacao()
+        self.assertEqual(len(dialogos), 1)
+        self.assertTrue(os.path.exists(os.path.join(pasta, validacao.ARQUIVO_RELATORIO)))
+
+    def test_exportar_validacao_sem_analise_avisa(self):
+        self.novo_projeto("sem_analise")
+        with mock.patch.object(QMessageBox, "information") as info:
+            self.janela.exportar_validacao()
+        info.assert_called_once()
+
     def test_fechar_com_alteracoes_pergunta_antes(self):
         self.novo_projeto("alterado")
         self.janela.chk_webcam.setChecked(not self.janela.chk_webcam.isChecked())

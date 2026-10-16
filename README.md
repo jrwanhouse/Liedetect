@@ -58,12 +58,28 @@ No fim, o **resumo por pergunta** (`relatorio_perguntas.csv`) mostra para cada p
 - os pontos de atenção e as piscadas por minuto;
 - se a pergunta **destoa das demais**, quando há pelo menos 3 perguntas para comparar.
 
+## ✅ Validação com codificadores FACS
+As AUs saem de regras sobre os blendshapes do MediaPipe, que foram feitos para animação e não treinados com FACS. Antes de usar os resultados como evidência, valide o sistema contra codificação humana.
+
+1. **Exportar uma amostra** de um projeto analisado (menu **Validação FACS › Exportar amostra para codificação**, ou `python main.py --projeto caso.liedetect --exportar-validacao PASTA --amostras 100`). O sorteio é reprodutível (`--semente`) e mistura frames em que o sistema viu cada AU com frames ao acaso, a pelo menos 0,5 s um do outro. Para cada amostra são gravados a imagem (sem marcações) e um trecho de ~1 s, mais a planilha em branco `codificacao_modelo.csv` e um `LEIA-ME.txt`.
+2. **Codificação cega:** cada codificador certificado preenche a sua cópia da planilha, sem ver as respostas do sistema, que ficam em `predicoes_sistema.csv` (não entregue esse arquivo). Em cada célula: vazio/0 = ausente, 1/X = presente, A–E = presente com intensidade.
+3. **Avaliar** (menu **Validação FACS › Avaliar codificação**, ou `python main.py --avaliar-validacao PASTA cod1.csv cod2.csv ...`). O consenso é a maioria dos codificadores, e as amostras empatadas ficam de fora. O `relatorio_validacao.csv` traz, por AU:
+   - **Sistema × consenso:** VP/FP/FN/VN, precisão, revocação, F1 e kappa de Cohen.
+   - **Entre codificadores:** kappa médio, que é o teto de referência.
+   - **Intensidade:** erro médio em letras.
+   - **Limiar sugerido:** o que maximiza o F1.
+   - **Situação:** *validada* (F1 ≥ 0,6), *validada com limiar ajustado*, *não validada* ou *amostra insuficiente* (< 10 casos positivos).
+4. **Aplicar os limiares sugeridos** (botão no resultado da avaliação, ou `--aplicar-limiares PASTA`). Eles ficam em `limiares_aus.json`, na pasta do programa, e valem para as próximas análises. Cada análise registra no projeto os limiares ajustados que usou (`limiares_ajustados`), para rastreabilidade.
+
+Use vídeos próprios, gravados com consentimento: as bases públicas codificadas em FACS (DISFA, BP4D etc.) costumam ter licença só acadêmica.
+
 ## 🧪 Testes
 ```bash
 python -m unittest discover -s tests -v
 ```
 - `tests/test_aus.py`: cada AU isolada deve gerar só ela mesma. Cobre ainda AU6×AU7 no sorriso, AU25/26/27 pela abertura da boca, pálpebras (AU43/45/46, sem AU7 nem olhar falsos ao piscar), olhar (61–64), lado L/R, cabeça (51–58, sem AU53 falsa com a boca aberta), intensidade e coerência das tabelas com o FACS.
-- `tests/test_gui.py`: a interface sem janela visível (criar, analisar, marcar perguntas, salvar, reabrir, trocar de projeto durante a análise) e a criação do detector **real** do MediaPipe numa thread do PySide6.
+- `tests/test_validacao.py`: kappa, F1 e leitura das células. Fluxo completo: exportação cega, consenso com empates, falsos positivos detectados, limiar sugerido e aplicação.
+- `tests/test_gui.py`: a interface sem janela visível (criar, analisar, marcar perguntas, salvar, reabrir, trocar de projeto durante a análise, menu de validação) e a criação do detector **real** do MediaPipe numa thread do PySide6.
 - `tests/test_medo.py`: as regras EMFACS de medo, o caminho blendshapes → AUs → emoção (com calibração) e uma sequência de vídeo simulada, com microexpressão e episódio sustentado.
 
 Os testes usam um detector simulado: verificam a lógica do sistema, não a precisão do MediaPipe em rostos reais. Duas convenções do modelo foram conferidas em foto real: o "Left" dos blendshapes é o lado esquerdo do sujeito, e fechar os olhos também eleva `eyeSquint` e `eyeLookDown`, por isso essas AUs são suprimidas durante a piscada.

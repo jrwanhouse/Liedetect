@@ -21,12 +21,14 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-                             QPushButton, QSlider, QVBoxLayout, QWidget)
+                             QInputDialog, QPlainTextEdit, QPushButton, QSlider, QVBoxLayout, QWidget)
 
 import preferencias
 import projeto as proj_mod
+import validacao
 from analise import executar_analise, resumir_perguntas, separar_resultados
 from atencao import AVISO, carregar_perguntas, linhas_resumo, texto_ponto
+import facs
 from facs import COR_ATENCAO, COR_EMOCAO, EMOCOES, desenhar, formatar_tempo
 
 FILTRO_PROJETO = f"Projeto Liedetect (*{proj_mod.EXTENSAO})"
@@ -408,6 +410,49 @@ class DialogoProjeto(QDialog):
                 "salvar_recortes": self.chk_recortes.isChecked()}
 
 
+class DialogoValidacao(QDialog):
+    """Concordancia por AU e opcao de aplicar os limiares sugeridos."""
+
+    def __init__(self, resultado, pasta, n_codificadores, parent=None):
+        super().__init__(parent)
+        self.pasta = pasta
+        self.setWindowTitle(f"Validação FACS — {n_codificadores} codificador(es)")
+        self.resize(820, 600)
+        layout = QVBoxLayout(self)
+        texto = QPlainTextEdit(validacao.texto_resumo(resultado))
+        texto.setReadOnly(True)
+        texto.setStyleSheet("font-family: Consolas, monospace;")
+        layout.addWidget(texto)
+        legenda = QLabel(f"pos = positivos no consenso · F1/kappa = sistema × consenso · k.cod = kappa entre "
+                         f"codificadores · lim/sug = limiar atual/sugerido. Relatório completo: "
+                         f"{os.path.join(pasta, validacao.ARQUIVO_RELATORIO)}")
+        legenda.setWordWrap(True)
+        layout.addWidget(legenda)
+        self.sugeridos = {r["au"]: r["limiar_sugerido"] for r in resultado if r["sugerir"]}
+        botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        botoes.rejected.connect(self.reject)
+        if self.sugeridos:
+            aplicar = botoes.addButton(f"Aplicar limiares sugeridos ({len(self.sugeridos)} AU)",
+                                       QDialogButtonBox.ButtonRole.ActionRole)
+            aplicar.clicked.connect(self._aplicar)
+        layout.addWidget(botoes)
+
+    def _aplicar(self):
+        lista = ", ".join(f"AU{au}={v:.2f}" for au, v in sorted(self.sugeridos.items()))
+        if QMessageBox.question(self, "Aplicar limiares",
+                                f"Gravar em {os.path.basename(facs.ARQUIVO_LIMIARES)} e usar nas próximas análises?\n{lista}"
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            ajustes = validacao.aplicar_limiares_sugeridos(self.pasta)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Aplicar limiares", f"Não foi possível aplicar: {e}")
+            return
+        QMessageBox.information(self, "Aplicar limiares",
+                                f"{len(ajustes)} limiar(es) ajustado(s) ativo(s). Projetos já analisados precisam "
+                                "ser analisados novamente para usar os novos limiares.")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, prefs, caminho_prefs):
         super().__init__()
@@ -434,6 +479,10 @@ class MainWindow(QMainWindow):
                 ("Preferências...", "Ctrl+,", self.abrir_preferencias),
                 None,
                 ("Sair", None, self.close),
+            ],
+            "Validação FACS": [
+                ("Exportar amostra para codificação...", None, self.exportar_validacao),
+                ("Avaliar codificação...", None, self.avaliar_validacao),
             ],
         }
         for titulo, acoes in menus.items():
@@ -963,6 +1012,50 @@ class MainWindow(QMainWindow):
     def update_img(self, img):
         px = QPixmap.fromImage(img).scaled(self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio)
         self.video_label.setPixmap(px)
+
+    # --- validacao FACS ---
+    def exportar_validacao(self):
+        proj = self.projeto
+        if not (proj and proj.analise and proj.resultados):
+            QMessageBox.information(self, "Validação FACS", "Abra um projeto já analisado para exportar a amostra.")
+            return
+        n, ok = QInputDialog.getInt(self, "Validação FACS", "Quantidade de frames a codificar:", 100, 10, 2000)
+        if not ok:
+            return
+        pasta = QFileDialog.getExistingDirectory(self, "Pasta para a amostra (de preferência vazia)", proj.pasta_saida())
+        if not pasta:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            exportadas = validacao.exportar_amostra(proj, pasta, n)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Validação FACS", f"Não foi possível exportar: {e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        QMessageBox.information(
+            self, "Validação FACS",
+            f"{exportadas} amostra(s) exportada(s) em:\n{pasta}\n\n"
+            f"Entregue a cada codificador a pasta '{validacao.PASTA_AMOSTRAS}', o LEIA-ME.txt e uma cópia de "
+            f"{validacao.ARQUIVO_MODELO}.\nNÃO entregue {validacao.ARQUIVO_PREDICOES} (codificação cega).")
+
+    def avaliar_validacao(self):
+        pasta = QFileDialog.getExistingDirectory(self, "Pasta da amostra exportada")
+        if not pasta:
+            return
+        if not os.path.exists(os.path.join(pasta, validacao.ARQUIVO_META)):
+            QMessageBox.warning(self, "Validação FACS", f"'{pasta}' não tem uma amostra exportada ({validacao.ARQUIVO_META}).")
+            return
+        planilhas, _ = QFileDialog.getOpenFileNames(self, "Planilhas preenchidas (uma por codificador)", pasta,
+                                                    "Planilhas (*.csv)")
+        if not planilhas:
+            return
+        try:
+            resultado = validacao.avaliar(pasta, planilhas)
+        except (OSError, ValueError, KeyError) as e:
+            QMessageBox.warning(self, "Validação FACS", f"Não foi possível avaliar: {e}")
+            return
+        DialogoValidacao(resultado, pasta, len(planilhas), self).exec()
 
     def closeEvent(self, evento):
         if not self._confirmar_descarte():

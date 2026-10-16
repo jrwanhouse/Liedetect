@@ -5,6 +5,7 @@ dos landmarks. Os primeiros CALIBRACAO_SEGUNDOS de rosto visivel definem a linha
 neutra do sujeito, que e descontada de todos os valores.
 """
 import csv
+import json
 import math
 import os
 import urllib.request
@@ -82,10 +83,33 @@ NAO_DETECTAVEIS = {
 LIMIAR_PADRAO = 0.3
 LIMIARES = {25: 0.15, 26: 0.25, 27: 0.65, 43: 0.5, 45: 0.5, 46: 0.5}
 LIMIARES |= {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58, 61, 62, 63, 64)}
-# Score que corresponde a intensidade E; a AU26 vai so ate onde comeca a AU27
-TETOS = {26: LIMIARES[27]}
+# Limiares ajustados pela validacao com codificadores FACS (validacao.py) substituem os padroes
+ARQUIVO_LIMIARES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limiares_aus.json")
+LIMIARES_PADRAO = {**{au: LIMIAR_PADRAO for au in NOMES_AU}, **LIMIARES}
+
+
+def carregar_limiares(caminho=ARQUIVO_LIMIARES):
+    """Aplica limiares_aus.json ({\"AU\": limiar}) sobre os padroes; retorna as AUs alteradas."""
+    LIMIARES.clear()
+    LIMIARES.update({au: v for au, v in LIMIARES_PADRAO.items() if v != LIMIAR_PADRAO})
+    if not os.path.exists(caminho):
+        return {}
+    with open(caminho, encoding="utf-8") as f:
+        ajustes = {int(au): float(v) for au, v in json.load(f).items() if int(au) in NOMES_AU and 0 < float(v) < 1}
+    LIMIARES.update(ajustes)
+    LIMIARES_AJUSTADOS.clear()
+    LIMIARES_AJUSTADOS.update(ajustes)
+    return ajustes
+
+
+def limiar_de(au):
+    return LIMIARES.get(au, LIMIAR_PADRAO)
+
+
 # Com as palpebras descendo o modelo sobe eyeLookDown e eyeSquint: acima disto o olhar nao e medido
 PALPEBRA_MAX_OLHAR = 0.35
+LIMIARES_AJUSTADOS = {}  # AUs com limiar vindo de limiares_aus.json
+carregar_limiares()
 
 # Landmarks onde cada AU aparece; AUs bilaterais listam [lado direito do sujeito, lado esquerdo]
 PONTOS_AU = {
@@ -140,6 +164,7 @@ class Resultado:
     espelhado: bool = False
     landmarks: list | None = None
     aus: dict = field(default_factory=dict)       # num -> AU
+    scores: dict = field(default_factory=dict)    # num -> score de toda AU medida, mesmo abaixo do limiar
     emocoes: dict = field(default_factory=dict)   # emocao -> combinacao (set)
     novos_episodios: list = field(default_factory=list)
     alertas: list = field(default_factory=list)
@@ -275,7 +300,7 @@ class AnalisadorFACS:
             if self.base_bs is None:
                 self._calibrar(bs, pose)
             else:
-                res.aus = self._calcular_aus(bs, pose)
+                res.aus, res.scores = self._calcular_aus(bs, pose)
                 res.emocoes = classificar_emocoes(res.aus)
 
         res.novos_episodios, fechados = self._atualizar_episodios(res, tempo)
@@ -364,8 +389,9 @@ class AnalisadorFACS:
                     lado = "R"
             if num == 46 and not lado:
                 continue  # os dois olhos meio fechados nao e piscadela
-            aus[num] = AU(score, intensidade(score, limiar, TETOS.get(num, 1.0)), lado)
-        return aus
+            teto = LIMIARES[27] if num == 26 else 1.0  # a AU26 vai so ate onde comeca a AU27
+            aus[num] = AU(score, intensidade(score, limiar, teto), lado)
+        return aus, s
 
     def _atualizar_episodios(self, res, tempo):
         novos, fechados = [], []

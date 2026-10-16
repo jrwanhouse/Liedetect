@@ -116,6 +116,36 @@ def analisar_projeto_no_terminal(caminho):
     print(f"💾 Resultado salvo no projeto '{proj.caminho}'.")
     return 0
 
+def validacao_no_terminal(args):
+    """Comandos de validacao FACS (exportar amostra, avaliar codificacao, aplicar limiares)."""
+    import validacao
+    try:
+        if args.exportar_validacao:
+            if not args.projeto:
+                print("❌ --exportar-validacao precisa de --projeto")
+                return 2
+            n = validacao.exportar_amostra(proj_mod.abrir(args.projeto), args.exportar_validacao,
+                                           args.amostras, semente=args.semente)
+            print(f"✅ {n} amostra(s) exportada(s) em '{args.exportar_validacao}'.")
+            print(f"   Entregue aos codificadores '{validacao.PASTA_AMOSTRAS}/', LEIA-ME.txt e {validacao.ARQUIVO_MODELO}.")
+            print(f"   NAO entregue {validacao.ARQUIVO_PREDICOES} (codificacao cega).")
+        elif args.avaliar_validacao:
+            pasta, *planilhas = args.avaliar_validacao
+            resultado = validacao.avaliar(pasta, planilhas)
+            print(validacao.texto_resumo(resultado))
+            print(f"\n📄 Relatorio: {os.path.join(pasta, validacao.ARQUIVO_RELATORIO)}")
+            if any(r["sugerir"] for r in resultado):
+                print(f"💡 Limiares sugeridos em {os.path.join(pasta, validacao.ARQUIVO_LIMIARES_SUGERIDOS)} "
+                      f"(aplique com --aplicar-limiares {pasta})")
+        else:
+            ajustes = validacao.aplicar_limiares_sugeridos(args.aplicar_limiares)
+            print(f"✅ Limiares ativos ({len(ajustes)}): " + ", ".join(f"AU{au}={v:.2f}" for au, v in sorted(ajustes.items())))
+            print("   Projetos ja analisados precisam ser analisados novamente para usar os novos limiares.")
+    except (OSError, ValueError, KeyError) as e:
+        print(f"❌ {e}")
+        return 1
+    return 0
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analisador de FACS forense (GUI / terminal).")
     parser.add_argument("--config", default=preferencias.ARQUIVO_PADRAO,
@@ -124,9 +154,22 @@ if __name__ == "__main__":
                                           "ou, no modo terminal, a analisar")
     parser.add_argument("--terminal", action="store_true",
                         help="forca o modo terminal mesmo com ambiente grafico")
+    validacao_args = parser.add_argument_group("validacao FACS")
+    validacao_args.add_argument("--exportar-validacao", metavar="PASTA",
+                                help="exporta amostra do --projeto para codificadores FACS")
+    validacao_args.add_argument("--amostras", type=int, default=100, help="frames na amostra (padrao 100)")
+    validacao_args.add_argument("--semente", type=int, default=0, help="semente do sorteio (reprodutivel)")
+    validacao_args.add_argument("--avaliar-validacao", nargs="+", metavar=("PASTA", "PLANILHA"),
+                                help="compara o sistema com as planilhas preenchidas (uma por codificador)")
+    validacao_args.add_argument("--aplicar-limiares", metavar="PASTA",
+                                help="aplica os limiares sugeridos pela avaliacao")
     args = parser.parse_args()
     prefs = preferencias.carregar(args.config)
 
+    if args.avaliar_validacao is not None and len(args.avaliar_validacao) < 2:
+        parser.error("--avaliar-validacao precisa da PASTA e de ao menos uma PLANILHA")
+    if args.exportar_validacao or args.avaliar_validacao or args.aplicar_limiares:
+        sys.exit(validacao_no_terminal(args))
     if not args.terminal and verificar_suporte_grafico():
         from gui import rodar_modo_grafico
         rodar_modo_grafico(prefs, args.config, args.projeto)

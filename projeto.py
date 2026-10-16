@@ -118,6 +118,7 @@ def _resultado_para_dict(r):
     return {
         "t": round(r.tempo, 4), "c": r.calibrando, "e": r.espelhado,
         "aus": {str(n): [round(a.score, 3), a.intensidade, a.lado] for n, a in r.aus.items()},
+        "sc": {str(n): round(v, 3) for n, v in r.scores.items() if v > 0.005},
         "emo": {e: sorted(map(str, c)) for e, c in r.emocoes.items()},
         "lm": None if r.landmarks is None else {str(i): [round(p.x, 5), round(p.y, 5)]
                                                  for i, p in r.landmarks.items()},
@@ -134,6 +135,7 @@ def _dict_para_resultado(d):
         tempo=d["t"], calibrando=d["c"], espelhado=d["e"],
         landmarks=None if d["lm"] is None else {int(i): Ponto(*xy) for i, xy in d["lm"].items()},
         aus={int(n): AU(*v) for n, v in d["aus"].items()},
+        scores={int(n): v for n, v in d.get("sc", {}).items()},  # projetos antigos nao tem
         emocoes={e: {_token(t) for t in c} for e, c in d["emo"].items()},
         pontos_ativos=d["pa"],
     )
