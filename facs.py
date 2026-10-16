@@ -8,12 +8,15 @@ import csv
 import math
 import os
 import urllib.request
-from dataclasses import dataclass, field
+from collections import namedtuple
+from dataclasses import dataclass, field, replace
 
 import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import BaseOptions, vision
+
+from atencao import AVISO, DetectorAtencao
 
 MODELO_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 MODELO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_landmarker.task")
@@ -113,6 +116,7 @@ COR_EMOCAO = {  # BGR
     "Desprezo":   (0, 140, 255),
 }
 COR_AU_NEUTRA = (200, 200, 200)
+COR_ATENCAO = (80, 160, 255)
 
 
 @dataclass
@@ -132,6 +136,8 @@ class Resultado:
     emocoes: dict = field(default_factory=dict)   # emocao -> combinacao (set)
     novos_episodios: list = field(default_factory=list)
     alertas: list = field(default_factory=list)
+    novos_pontos: list = field(default_factory=list)   # pontos de atencao
+    pontos_ativos: list = field(default_factory=list)  # descricoes dos pontos em curso
 
 
 def criar_detector():
@@ -202,12 +208,12 @@ def _escala(delta, limite):
 
 
 class AnalisadorFACS:
-    def __init__(self, fps, espelhado=False):
+    def __init__(self, fps, espelhado=False, calibracao_segundos=CALIBRACAO_SEGUNDOS):
         """espelhado=True para video de webcam em modo selfie (imagem invertida horizontalmente)."""
         self.fps = fps
         self.espelhado = espelhado
         self.detector = criar_detector()
-        self.frames_calibracao = max(1, int(fps * CALIBRACAO_SEGUNDOS))
+        self.frames_calibracao = max(1, int(fps * calibracao_segundos))
         self._amostras_bs, self._amostras_pose = [], []
         self.base_bs = self.base_pose = None
         self.min_frames_emocao = max(2, round(fps * 0.07))
@@ -217,6 +223,15 @@ class AnalisadorFACS:
         self.piscadas = 0
         self._rastreio = {e: {"seq": 0, "ausente": 0, "ep": None} for e in EMOCOES}
         self.episodios = []
+        self.atencao = DetectorAtencao(fps)
+        self._piscou = False
+
+    def finalizar(self):
+        """Fecha os episodios em aberto no fim do video; retorna os ultimos pontos de atencao."""
+        abertos = [r["ep"] for r in self._rastreio.values() if r["ep"] is not None]
+        for r in self._rastreio.values():
+            r["ep"] = None
+        return self.atencao.finalizar(abertos)
 
     def close(self):
         self.detector.close()
@@ -235,6 +250,7 @@ class AnalisadorFACS:
         r = self.detector.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
                                            int(tempo * 1000))
         res = Resultado(tempo=tempo, calibrando=self.base_bs is None, espelhado=self.espelhado)
+        self._piscou = False
 
         if r.face_landmarks:
             lm = r.face_landmarks[0]
@@ -247,7 +263,8 @@ class AnalisadorFACS:
                 res.aus = self._calcular_aus(bs, pose)
                 res.emocoes = classificar_emocoes(res.aus)
 
-        res.novos_episodios = self._atualizar_episodios(res, tempo)
+        res.novos_episodios, fechados = self._atualizar_episodios(res, tempo)
+        res.novos_pontos, res.pontos_ativos = self.atencao.atualizar(res, self._piscou, fechados)
         if frame_idx > 0 and frame_idx % self.janela_piscadas == 0:
             if self.piscadas > 6:
                 res.alertas.append("Frequencia Critica de Piscadas (Estresse)")
@@ -289,6 +306,7 @@ class AnalisadorFACS:
         if olhos_fechados:
             if self._frames_fechado == 0:
                 self.piscadas += 1
+                self._piscou = True
             self._frames_fechado += 1
             s[43 if self._frames_fechado > self.fps * 0.5 else 45] = min(pisca_e, pisca_d)
         else:
@@ -330,7 +348,7 @@ class AnalisadorFACS:
         return aus
 
     def _atualizar_episodios(self, res, tempo):
-        novos = []
+        novos, fechados = [], []
         for emocao, r in self._rastreio.items():
             if emocao in res.emocoes:
                 r["ausente"] = 0
@@ -349,8 +367,21 @@ class AnalisadorFACS:
                 if r["ep"] is not None:
                     r["ausente"] += 1
                     if r["ausente"] > self.folga_frames:
+                        fechados.append(r["ep"])
                         r["ep"] = None
-        return novos
+        return novos, fechados
+
+
+Ponto = namedtuple("Ponto", "x y")
+
+
+def compactar(res):
+    """Copia do Resultado so com o necessario para redesenhar o frame depois (player de revisao)."""
+    landmarks = None
+    if res.landmarks is not None:
+        indices = {i for num in res.aus for i in PONTOS_AU[num]}
+        landmarks = {i: Ponto(res.landmarks[i].x, res.landmarks[i].y) for i in indices}
+    return replace(res, landmarks=landmarks, novos_episodios=[], alertas=[], novos_pontos=[])
 
 
 def formatar_tempo(segundos):
@@ -386,6 +417,8 @@ def desenhar(frame, res):
                                 escala * 0.7, cor, 1, cv2.LINE_AA)
         for emocao, combo in res.emocoes.items():
             linhas.append((f"{emocao}: {rotulo_combinacao(combo, res.aus)}", COR_EMOCAO[emocao]))
+        for descricao in res.pontos_ativos:
+            linhas.append((f"Atencao: {descricao}", COR_ATENCAO))
         if res.aus:
             linhas.append(("AUs: " + " ".join(rotulo_au(n, a) for n, a in sorted(res.aus.items())),
                            COR_AU_NEUTRA))
@@ -397,13 +430,17 @@ def desenhar(frame, res):
         cv2.putText(frame, texto, pos, fonte, escala, cor, 1, cv2.LINE_AA)
 
 
-def salvar_relatorio(caminho, episodios, alertas):
-    """Grava CSV (separador ;) com os episodios de emocao e os alertas (tempo, texto)."""
+def salvar_relatorio(caminho, episodios, alertas, pontos=()):
+    """Grava CSV (separador ;) com episodios de emocao, pontos de atencao e alertas (tempo, texto)."""
     with open(caminho, "w", newline="", encoding="utf-8-sig") as f:
         wr = csv.writer(f, delimiter=";")
+        wr.writerow([f"# {AVISO}"])
         wr.writerow(["tipo", "inicio", "fim", "duracao_s", "descricao", "aus"])
         for ep in sorted(episodios, key=lambda e: e["inicio"]):
             wr.writerow(["emocao", formatar_tempo(ep["inicio"]), formatar_tempo(ep["fim"]),
                          f"{ep['fim'] - ep['inicio']:.2f}", ep["emocao"], ep["aus"]])
+        for p in sorted(pontos, key=lambda p: p["inicio"]):
+            wr.writerow(["atencao", formatar_tempo(p["inicio"]), formatar_tempo(p["fim"]),
+                         f"{p['fim'] - p['inicio']:.2f}", f"{p['tipo']}: {p['descricao']}", ""])
         for tempo, texto in alertas:
             wr.writerow(["alerta", formatar_tempo(tempo), "", "", texto, ""])
