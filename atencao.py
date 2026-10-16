@@ -39,10 +39,10 @@ class DetectorAtencao:
         condicoes = {}
         for num, au in res.aus.items():
             if au.lado and num not in (30, 46):  # mandibula lateral e piscadela sao laterais por natureza
-                condicoes[f"assimetria{num}"] = ("Assimetria", f"{rotulo_au(num, au)} so de um lado do rosto")
+                condicoes[f"assimetria{num}"] = ("Assimetria", f"{rotulo_au(num, au, res.malha)} so de um lado do rosto")
         if 12 in res.aus and not res.aus[12].lado and 6 not in res.aus:
             condicoes["sorriso"] = ("Sorriso sem AU6",
-                                    f"{rotulo_au(12, res.aus[12])} sem AU6: sorriso que nao chega aos olhos")
+                                    f"{rotulo_au(12, res.aus[12], res.malha)} sem AU6: sorriso que nao chega aos olhos")
         novos += self._rastrear(condicoes, t)
 
         for ep in episodios_fechados:

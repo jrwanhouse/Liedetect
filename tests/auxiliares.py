@@ -90,3 +90,35 @@ def aus_de(blendshapes=None, pontos=None, frames=1, fps=30):
     item = (expressao, landmarks(pontos)) if pontos else expressao
     _, resultados = analisar_sequencia([NEUTRO] * 30 + [item] * frames, fps)
     return resultados[-1].aus
+
+
+# --- Py-Feat: linhas do CSV do pyfeat_worker.py, com a malha de 68 pontos em pixels (640x480) ---
+AUS_PF = [1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 17, 20, 23, 24, 25, 26, 28, 43]
+EMOCOES_PF = ["anger", "disgust", "fear", "happiness", "sadness", "surprise", "neutral"]
+
+
+def malha68(abertura=(1.0, 1.0), nariz=(0.0, 0.0)):
+    """68 pontos de um rosto frontal; abertura = (olho esquerdo, olho direito) do sujeito, 1 = aberto."""
+    p = {i: (320.0, 300.0) for i in range(68)}
+    p |= {0: (200, 230), 16: (440, 230), 30: (320 + nariz[0], 260 + nariz[1])}
+    ae, ad = abertura
+    # olho direito do sujeito (lado esquerdo da imagem): 36 externo, 39 interno, 37/38 em cima, 41/40 embaixo
+    p |= {36: (230, 200), 39: (270, 200), 37: (243, 200 - 6 * ad), 38: (257, 200 - 6 * ad),
+          41: (243, 200 + 6 * ad), 40: (257, 200 + 6 * ad)}
+    # olho esquerdo: 42 interno, 45 externo, 43/44 em cima, 47/46 embaixo
+    p |= {42: (370, 200), 45: (410, 200), 43: (377, 200 - 6 * ae), 44: (403, 200 - 6 * ae),
+          47: (377, 200 + 6 * ae), 46: (403, 200 + 6 * ae)}
+    return p
+
+
+def linha_pyfeat(aus=None, emocoes=None, abertura=(1.0, 1.0), nariz=(0.0, 0.0), rosto=0.99):
+    linha = {"FaceScore": rosto} | {f"AU{au:02d}": 0.05 for au in AUS_PF}
+    linha |= {f"AU{au:02d}": v for au, v in (aus or {}).items()}
+    linha |= {e: 0.01 for e in EMOCOES_PF} | {"neutral": 0.9} | (emocoes or {})
+    for i, (x, y) in malha68(abertura, nariz).items():
+        linha[f"x_{i}"], linha[f"y_{i}"] = float(x), float(y)
+    return linha
+
+
+NEUTRO_PF = linha_pyfeat()
+FELIZ_PF = linha_pyfeat({6: 0.8, 12: 0.9}, {"happiness": 0.95, "neutral": 0.02})

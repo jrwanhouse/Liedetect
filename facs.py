@@ -68,13 +68,22 @@ AUS_DERIVADAS = {
     63: "Olhos para cima",
     64: "Olhos para baixo",
 }
-NOMES_AU = {au: spec[0] for au, spec in AUS_BLENDSHAPE.items()} | AUS_DERIVADAS
+# So o Py-Feat mede estas; no MediaPipe a AU24 vem junto com a AU23 (rotulo AU23/24)
+AUS_SO_PYFEAT = {11: "Aprofundador nasolabial", 24: "Pressor dos labios"}
+NOMES_AU = {au: spec[0] for au, spec in AUS_BLENDSHAPE.items()} | AUS_DERIVADAS | AUS_SO_PYFEAT
+
+# Detectores de AUs e as malhas de pontos que cada um devolve
+MEDIAPIPE, PYFEAT = "mediapipe", "pyfeat"
+# AUs do classificador do Py-Feat; olhos (43/45/46) e cabeca (51-58) vem da malha de 68 pontos
+AUS_PYFEAT = [1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 17, 20, 23, 24, 25, 26, 28, 43]
+AUS_MEDIDAS = {MEDIAPIPE: set(NOMES_AU) - set(AUS_SO_PYFEAT),
+               PYFEAT: set(AUS_PYFEAT) | {45, 46} | set(range(51, 59))}
+MALHA_MEDIAPIPE, MALHA_68 = "mp478", "ibug68"
 
 # AUs do FACS sem sinal correspondente no modelo
 NAO_DETECTAVEIS = {
-    8: "Labios um em direcao ao outro", 11: "Aprofundador nasolabial", 13: "Puxador agudo do labio",
-    19: "Mostrar a lingua (o modelo nao emite tongueOut)",
-    21: "Tensor do pescoco", 24: "Pressor dos labios (indistinguivel da AU23; reportada como AU23/24)",
+    8: "Labios um em direcao ao outro", 13: "Puxador agudo do labio",
+    19: "Mostrar a lingua (o modelo nao emite tongueOut)", 21: "Tensor do pescoco",
     31: "Apertar a mandibula", 32: "Morder o labio", 33: "Soprar", 35: "Sugar as bochechas",
     36: "Protuberancia da lingua", 37: "Limpar os labios", 38: "Dilatar narinas", 39: "Comprimir narinas",
     41: "Palpebra caida", 42: "Fenda palpebral", 44: "Estreitar os olhos",
@@ -83,33 +92,53 @@ NAO_DETECTAVEIS = {
 LIMIAR_PADRAO = 0.3
 LIMIARES = {25: 0.15, 26: 0.25, 27: 0.65, 43: 0.5, 45: 0.5, 46: 0.5}
 LIMIARES |= {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58, 61, 62, 63, 64)}
+# Py-Feat devolve probabilidades: 0.5 e o corte natural; cabeca e olhos seguem a escala do MediaPipe
+LIMIAR_PYFEAT = 0.5
+LIMIARES_PYFEAT = {au: 0.4 for au in (51, 52, 53, 54, 55, 56, 57, 58)} | {43: 0.5, 45: 0.5}
+
 # Limiares ajustados pela validacao com codificadores FACS (validacao.py) substituem os padroes
-ARQUIVO_LIMIARES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limiares_aus.json")
-LIMIARES_PADRAO = {**{au: LIMIAR_PADRAO for au in NOMES_AU}, **LIMIARES}
+_PASTA = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_LIMIARES = os.path.join(_PASTA, "limiares_aus.json")
+ARQUIVOS_LIMIARES = {MEDIAPIPE: ARQUIVO_LIMIARES, PYFEAT: os.path.join(_PASTA, "limiares_aus_pyfeat.json")}
+_LIMIARES_ATIVOS = {MEDIAPIPE: LIMIARES, PYFEAT: LIMIARES_PYFEAT}
+_LIMIAR_BASE = {MEDIAPIPE: LIMIAR_PADRAO, PYFEAT: LIMIAR_PYFEAT}
+_PADROES = {d: {**{au: _LIMIAR_BASE[d] for au in NOMES_AU}, **lim} for d, lim in _LIMIARES_ATIVOS.items()}
+LIMIARES_PADRAO = _PADROES[MEDIAPIPE]
 
 
-def carregar_limiares(caminho=ARQUIVO_LIMIARES):
-    """Aplica limiares_aus.json ({\"AU\": limiar}) sobre os padroes; retorna as AUs alteradas."""
-    LIMIARES.clear()
-    LIMIARES.update({au: v for au, v in LIMIARES_PADRAO.items() if v != LIMIAR_PADRAO})
-    if not os.path.exists(caminho):
-        return {}
-    with open(caminho, encoding="utf-8") as f:
-        ajustes = {int(au): float(v) for au, v in json.load(f).items() if int(au) in NOMES_AU and 0 < float(v) < 1}
-    LIMIARES.update(ajustes)
-    LIMIARES_AJUSTADOS.clear()
-    LIMIARES_AJUSTADOS.update(ajustes)
+def carregar_limiares(caminho=None, detector=MEDIAPIPE):
+    """Aplica o arquivo de limiares ({"AU": limiar}) do detector sobre os padroes; retorna os ajustes."""
+    caminho = caminho or ARQUIVOS_LIMIARES[detector]
+    ativos, base = _LIMIARES_ATIVOS[detector], _LIMIAR_BASE[detector]
+    ativos.clear()
+    ativos.update({au: v for au, v in _PADROES[detector].items() if v != base})
+    ajustes = {}
+    if os.path.exists(caminho):
+        with open(caminho, encoding="utf-8") as f:
+            ajustes = {int(au): float(v) for au, v in json.load(f).items()
+                       if int(au) in NOMES_AU and 0 < float(v) < 1}
+    ativos.update(ajustes)
+    LIMIARES_AJUSTADOS_POR_DETECTOR[detector] = ajustes
+    if detector == MEDIAPIPE:
+        LIMIARES_AJUSTADOS.clear()
+        LIMIARES_AJUSTADOS.update(ajustes)
     return ajustes
 
 
-def limiar_de(au):
-    return LIMIARES.get(au, LIMIAR_PADRAO)
+def limiar_de(au, detector=MEDIAPIPE):
+    return _LIMIARES_ATIVOS[detector].get(au, _LIMIAR_BASE[detector])
+
+
+def limiar_padrao_de(au, detector=MEDIAPIPE):
+    return _PADROES[detector][au]
 
 
 # Com as palpebras descendo o modelo sobe eyeLookDown e eyeSquint: acima disto o olhar nao e medido
 PALPEBRA_MAX_OLHAR = 0.35
-LIMIARES_AJUSTADOS = {}  # AUs com limiar vindo de limiares_aus.json
-carregar_limiares()
+LIMIARES_AJUSTADOS = {}  # AUs com limiar vindo de limiares_aus.json (MediaPipe)
+LIMIARES_AJUSTADOS_POR_DETECTOR = {}
+carregar_limiares(detector=MEDIAPIPE)
+carregar_limiares(detector=PYFEAT)
 
 # Landmarks onde cada AU aparece; AUs bilaterais listam [lado direito do sujeito, lado esquerdo]
 PONTOS_AU = {
@@ -121,16 +150,30 @@ PONTOS_AU = {
     57: [1], 58: [1], 61: [468, 473], 62: [468, 473], 63: [468, 473], 64: [468, 473],
 }
 
+# Mesmo papel na malha de 68 pontos (iBUG) usada pelo Py-Feat; [lado direito, lado esquerdo]
+PONTOS_AU_68 = {
+    1: [21, 22], 2: [17, 26], 4: [27], 5: [37, 44], 6: [2, 14], 7: [41, 46], 9: [31, 35],
+    10: [50, 52], 11: [49, 53], 12: [48, 54], 14: [48, 54], 15: [48, 54], 16: [58, 56], 17: [8],
+    18: [62], 20: [48, 54], 22: [62], 23: [62], 24: [62], 25: [66], 26: [8], 27: [8], 28: [62],
+    29: [8], 30: [5, 11], 34: [2, 14], 43: [37, 44], 45: [37, 44], 46: [37, 44],
+    51: [30], 52: [30], 53: [30], 54: [30], 55: [30], 56: [30], 57: [30], 58: [30],
+    61: [37, 44], 62: [37, 44], 63: [37, 44], 64: [37, 44],
+}
+PONTOS_AU[11] = [206, 426]
+PONTOS_AU[24] = [13]
+PONTOS_POR_MALHA = {MALHA_MEDIAPIPE: PONTOS_AU, MALHA_68: PONTOS_AU_68}
+
 # Combinacoes EMFACS (prototipos e variantes principais de Ekman & Friesen).
 # "U12"/"U14" = AU12/AU14 unilateral.
 EMOCOES = {
     "Felicidade": [{6, 12}],
-    "Tristeza":   [{1, 4, 15}, {1, 4, 15, 17}, {6, 15}],
+    "Tristeza":   [{1, 4, 15}, {1, 4, 15, 17}, {1, 4, 11, 15}, {6, 15}],
     "Surpresa":   [{1, 2, 5, 26}, {1, 2, 5, 27}, {1, 2, 26}, {1, 2, 5}],
     "Medo":       [{1, 2, 4, 5, 7, 20, 26}, {1, 2, 4, 5, 20, 26}, {1, 2, 4, 5, 20},
                    {1, 2, 4, 5, 25}, {1, 2, 4, 5, 26}, {1, 2, 4, 5, 27}, {1, 2, 4, 5},
                    {1, 2, 4, 20}, {5, 20}],
-    "Raiva":      [{4, 5, 7, 23}, {4, 5, 23}, {4, 7, 23}, {4, 5, 7}],
+    "Raiva":      [{4, 5, 7, 23}, {4, 5, 23}, {4, 7, 23}, {4, 5, 7, 24}, {4, 5, 24}, {4, 7, 24},
+                   {4, 5, 7}],
     "Nojo":       [{9}, {9, 15, 16}, {9, 17}, {10, 17}, {10, 16, 25}, {10, 15}],
     "Desprezo":   [{"U12"}, {"U14"}],
 }
@@ -148,6 +191,8 @@ COR_EMOCAO = {  # BGR
 }
 COR_AU_NEUTRA = (200, 200, 200)
 COR_ATENCAO = (80, 160, 255)
+# emocao vinda do classificador do Py-Feat sem AU que a explique
+ROTULO_SEM_AUS = "modelo Py-Feat"
 
 
 @dataclass
@@ -162,6 +207,7 @@ class Resultado:
     tempo: float
     calibrando: bool
     espelhado: bool = False
+    malha: str = MALHA_MEDIAPIPE
     landmarks: list | None = None
     aus: dict = field(default_factory=dict)       # num -> AU
     scores: dict = field(default_factory=dict)    # num -> score de toda AU medida, mesmo abaixo do limiar
@@ -196,14 +242,15 @@ def num_au(token):
     return int(str(token).lstrip("U"))
 
 
-def rotulo_au(num, au):
-    nome = "AU23/24" if num == 23 else f"AU{num}"
+def rotulo_au(num, au, malha=MALHA_MEDIAPIPE):
+    # o MediaPipe nao separa a AU24 da AU23
+    nome = "AU23/24" if num == 23 and malha == MALHA_MEDIAPIPE else f"AU{num}"
     return f"{nome}{au.intensidade}" + (f"({au.lado})" if au.lado else "")
 
 
-def rotulo_combinacao(combo, aus):
-    nums = sorted({num_au(t) for t in combo})
-    return "+".join(rotulo_au(n, aus[n]) for n in nums)
+def rotulo_combinacao(combo, aus, malha=MALHA_MEDIAPIPE):
+    nums = sorted({num_au(t) for t in combo if num_au(t) in aus})
+    return "+".join(rotulo_au(n, aus[n], malha) for n in nums)
 
 
 def classificar_emocoes(aus):
@@ -221,16 +268,19 @@ def classificar_emocoes(aus):
             if not any(c < o for k, o in achadas.items() if k != e)}
 
 
-def _pose(lm, w, h):
+# (canto externo do olho direito, do esquerdo, bochecha direita, esquerda, ponta do nariz)
+POSE_MEDIAPIPE = (33, 263, 234, 454, 1)
+POSE_68 = (36, 45, 0, 16, 30)
+
+
+def _pose(lm, w, h, indices=POSE_MEDIAPIPE):
     """(yaw, pitch, roll, largura) a partir de pontos que nao se movem com a expressao.
 
     Os eixos seguem a linha dos olhos (corrige a inclinacao lateral). O pitch usa a distancia
     entre os olhos como escala: o queixo desce quando a boca abre e nao pode servir de referencia.
     """
     p = lambda i: np.array([lm[i].x * w, lm[i].y * h])
-    olho_d, olho_e = p(33), p(263)
-    bochecha_d, bochecha_e = p(234), p(454)
-    nariz = p(1)
+    olho_d, olho_e, bochecha_d, bochecha_e, nariz = map(p, indices)
     eixo = olho_e - olho_d
     interocular = np.linalg.norm(eixo)
     horizontal = eixo / interocular
@@ -247,15 +297,22 @@ def _escala(delta, limite):
     return min(1.0, abs(delta) / (limite * 2.5))
 
 
-class AnalisadorFACS:
+class AnalisadorBase:
+    """Parte comum a todos os detectores: calibracao, cabeca, piscadas, limiares, episodios e atencao.
+
+    Cada detector implementa _medir(frame_bgr, frame_idx, res), preenchendo landmarks, aus,
+    scores e emocoes do Resultado.
+    """
+    detector = MEDIAPIPE
+    malha = MALHA_MEDIAPIPE
+
     def __init__(self, fps, espelhado=False, calibracao_segundos=CALIBRACAO_SEGUNDOS):
         """espelhado=True para video de webcam em modo selfie (imagem invertida horizontalmente)."""
         self.fps = fps
         self.espelhado = espelhado
-        self.detector = criar_detector()
         self.frames_calibracao = max(1, int(fps * calibracao_segundos))
-        self._amostras_bs, self._amostras_pose = [], []
-        self.base_bs = self.base_pose = None
+        self._amostras_pose = []
+        self.base_pose = None
         self.min_frames_emocao = max(2, round(fps * 0.07))
         self.folga_frames = round(fps * 0.5)
         self.janela_piscadas = int(fps * 5)
@@ -274,7 +331,10 @@ class AnalisadorFACS:
         return self.atencao.finalizar(abertos)
 
     def close(self):
-        self.detector.close()
+        pass
+
+    def calibrado(self):
+        return self.base_pose is not None
 
     def processar(self, frame_bgr, frame_idx):
         """Analisa um frame (frame_idx comeca em 0).
@@ -285,23 +345,10 @@ class AnalisadorFACS:
         if self.espelhado:
             frame_bgr[:] = cv2.flip(frame_bgr, 1)
         tempo = frame_idx / self.fps
-        h, w = frame_bgr.shape[:2]
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        r = self.detector.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
-                                           int(tempo * 1000))
-        res = Resultado(tempo=tempo, calibrando=self.base_bs is None, espelhado=self.espelhado)
+        res = Resultado(tempo=tempo, calibrando=not self.calibrado(), espelhado=self.espelhado,
+                        malha=self.malha)
         self._piscou = False
-
-        if r.face_landmarks:
-            lm = r.face_landmarks[0]
-            bs = {c.category_name: c.score for c in r.face_blendshapes[0]}
-            pose = _pose(lm, w, h)
-            res.landmarks = lm
-            if self.base_bs is None:
-                self._calibrar(bs, pose)
-            else:
-                res.aus, res.scores = self._calcular_aus(bs, pose)
-                res.emocoes = classificar_emocoes(res.aus)
+        self._medir(frame_bgr, frame_idx, res)
 
         res.novos_episodios, fechados = self._atualizar_episodios(res, tempo)
         res.novos_pontos, res.pontos_ativos = self.atencao.atualizar(res, self._piscou, fechados)
@@ -311,12 +358,126 @@ class AnalisadorFACS:
             self.piscadas = 0
         return res
 
+    def _medir(self, frame_bgr, frame_idx, res):
+        raise NotImplementedError
+
+    def _calibrar_pose(self, pose):
+        """Acumula a pose neutra; True quando a calibracao termina neste frame."""
+        self._amostras_pose.append(pose)
+        if len(self._amostras_pose) >= self.frames_calibracao:
+            self.base_pose = np.median(self._amostras_pose, axis=0)
+            return True
+        return False
+
+    def _olhos(self, s, lados, fechado_e, fechado_d, pisca_e, pisca_d):
+        """AU43 (fechados > 0.5 s), AU45 (piscada) e AU46 (piscadela); conta as piscadas."""
+        if fechado_e and fechado_d:
+            if self._frames_fechado == 0:
+                self.piscadas += 1
+                self._piscou = True
+            self._frames_fechado += 1
+            s[43 if self._frames_fechado > self.fps * 0.5 else 45] = min(pisca_e, pisca_d)
+        else:
+            self._frames_fechado = 0
+            lados[46] = (pisca_e, pisca_d)
+            s[46] = max(pisca_e, pisca_d)
+
+    def _cabeca(self, pose, s):
+        """AU51-58 pelo desvio em relacao a pose neutra da calibracao."""
+        d_yaw, d_pitch, d_roll = pose[:3] - self.base_pose[:3]
+        razao_largura = pose[3] / self.base_pose[3]
+        s[51 if d_yaw > 0 else 52] = _escala(d_yaw, 0.08)
+        s[53 if d_pitch < 0 else 54] = _escala(d_pitch, 0.08)
+        s[55 if d_roll > 0 else 56] = _escala(d_roll, 8.0)
+        if abs(d_yaw) < 0.08:
+            if razao_largura > 1:
+                s[57] = _escala(razao_largura - 1, 0.15)
+            else:
+                s[58] = _escala(1 - razao_largura, 0.13)
+
+    def _limiarizar(self, s, lados):
+        """Scores -> AUs ativas, com intensidade e lado quando unilateral."""
+        limiares, base = _LIMIARES_ATIVOS[self.detector], _LIMIAR_BASE[self.detector]
+        aus = {}
+        for num, score in s.items():
+            limiar = limiares.get(num, base)
+            if score < limiar:
+                continue
+            lado = ""
+            if num in lados:
+                e, d = lados[num]
+                if e >= limiar and d < limiar * 0.5:
+                    lado = "L"
+                elif d >= limiar and e < limiar * 0.5:
+                    lado = "R"
+            if num == 46 and not lado:
+                continue  # os dois olhos meio fechados nao e piscadela
+            teto = limiares[27] if num == 26 and 27 in limiares else 1.0  # a AU26 vai ate onde comeca a AU27
+            aus[num] = AU(score, intensidade(score, limiar, teto), lado)
+        return aus
+
+
+    def _atualizar_episodios(self, res, tempo):
+        novos, fechados = [], []
+        for emocao, r in self._rastreio.items():
+            if emocao in res.emocoes:
+                r["ausente"] = 0
+                r["seq"] += 1
+                if r["seq"] == 1:
+                    r["inicio"] = tempo
+                    r["aus"] = rotulo_combinacao(res.emocoes[emocao], res.aus, res.malha) or ROTULO_SEM_AUS
+                if r["ep"] is not None:
+                    r["ep"]["fim"] = tempo
+                elif r["seq"] >= self.min_frames_emocao:
+                    r["ep"] = {"emocao": emocao, "inicio": r["inicio"], "fim": tempo, "aus": r["aus"]}
+                    self.episodios.append(r["ep"])
+                    novos.append(r["ep"])
+            else:
+                r["seq"] = 0
+                if r["ep"] is not None:
+                    r["ausente"] += 1
+                    if r["ausente"] > self.folga_frames:
+                        fechados.append(r["ep"])
+                        r["ep"] = None
+        return novos, fechados
+
+
+class AnalisadorFACS(AnalisadorBase):
+    """AUs pelos blendshapes do MediaPipe FaceLandmarker."""
+
+    def __init__(self, fps, espelhado=False, calibracao_segundos=CALIBRACAO_SEGUNDOS):
+        super().__init__(fps, espelhado, calibracao_segundos)
+        self.detector_mp = criar_detector()
+        self._amostras_bs = []
+        self.base_bs = None
+
+    def close(self):
+        self.detector_mp.close()
+
+    def calibrado(self):
+        return self.base_bs is not None
+
+    def _medir(self, frame_bgr, frame_idx, res):
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        r = self.detector_mp.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
+                                              int(res.tempo * 1000))
+        if not r.face_landmarks:
+            return
+        lm = r.face_landmarks[0]
+        bs = {c.category_name: c.score for c in r.face_blendshapes[0]}
+        pose = _pose(lm, w, h)
+        res.landmarks = lm
+        if self.base_bs is None:
+            self._calibrar(bs, pose)
+        else:
+            res.aus, res.scores = self._calcular_aus(bs, pose)
+            res.emocoes = classificar_emocoes(res.aus)
+
     def _calibrar(self, bs, pose):
         self._amostras_bs.append(bs)
-        self._amostras_pose.append(pose)
-        if len(self._amostras_bs) >= self.frames_calibracao:
+        if self._calibrar_pose(pose):
             self.base_bs = {k: float(np.median([a[k] for a in self._amostras_bs])) for k in bs}
-            self.base_pose = np.median(self._amostras_pose, axis=0)
 
     def _calcular_aus(self, bs_bruto, pose):
         bs = {k: max(0.0, (v - self.base_bs[k]) / (1 - self.base_bs[k])) if self.base_bs[k] < 1 else 0.0
@@ -348,74 +509,15 @@ class AnalisadorFACS:
         s[27] = jaw if jaw >= LIMIARES[27] else 0.0
         s[28] = max(bs["mouthRollUpper"], bs["mouthRollLower"])
 
-        if all(fechado):
-            if self._frames_fechado == 0:
-                self.piscadas += 1
-                self._piscou = True
-            self._frames_fechado += 1
-            s[43 if self._frames_fechado > self.fps * 0.5 else 45] = min(pisca_e, pisca_d)
-        else:
-            self._frames_fechado = 0
-            lados[46] = (pisca_e, pisca_d)
-            s[46] = max(pisca_e, pisca_d)
+        self._olhos(s, lados, *fechado, pisca_e, pisca_d)
         if max(pisca_e, pisca_d) < PALPEBRA_MAX_OLHAR:  # olhar so e confiavel com olhos abertos
             s[61] = (bs["eyeLookOutLeft"] + bs["eyeLookInRight"]) / 2
             s[62] = (bs["eyeLookInLeft"] + bs["eyeLookOutRight"]) / 2
             s[63] = (bs["eyeLookUpLeft"] + bs["eyeLookUpRight"]) / 2
             s[64] = (bs["eyeLookDownLeft"] + bs["eyeLookDownRight"]) / 2
 
-        d_yaw, d_pitch, d_roll = pose[:3] - self.base_pose[:3]
-        razao_largura = pose[3] / self.base_pose[3]
-        s[51 if d_yaw > 0 else 52] = _escala(d_yaw, 0.08)
-        s[53 if d_pitch < 0 else 54] = _escala(d_pitch, 0.08)
-        s[55 if d_roll > 0 else 56] = _escala(d_roll, 8.0)
-        if abs(d_yaw) < 0.08:
-            if razao_largura > 1:
-                s[57] = _escala(razao_largura - 1, 0.15)
-            else:
-                s[58] = _escala(1 - razao_largura, 0.13)
-
-        aus = {}
-        for num, score in s.items():
-            limiar = LIMIARES.get(num, LIMIAR_PADRAO)
-            if score < limiar:
-                continue
-            lado = ""
-            if num in lados:
-                e, d = lados[num]
-                if e >= limiar and d < limiar * 0.5:
-                    lado = "L"
-                elif d >= limiar and e < limiar * 0.5:
-                    lado = "R"
-            if num == 46 and not lado:
-                continue  # os dois olhos meio fechados nao e piscadela
-            teto = LIMIARES[27] if num == 26 else 1.0  # a AU26 vai so ate onde comeca a AU27
-            aus[num] = AU(score, intensidade(score, limiar, teto), lado)
-        return aus, s
-
-    def _atualizar_episodios(self, res, tempo):
-        novos, fechados = [], []
-        for emocao, r in self._rastreio.items():
-            if emocao in res.emocoes:
-                r["ausente"] = 0
-                r["seq"] += 1
-                if r["seq"] == 1:
-                    r["inicio"] = tempo
-                    r["aus"] = rotulo_combinacao(res.emocoes[emocao], res.aus)
-                if r["ep"] is not None:
-                    r["ep"]["fim"] = tempo
-                elif r["seq"] >= self.min_frames_emocao:
-                    r["ep"] = {"emocao": emocao, "inicio": r["inicio"], "fim": tempo, "aus": r["aus"]}
-                    self.episodios.append(r["ep"])
-                    novos.append(r["ep"])
-            else:
-                r["seq"] = 0
-                if r["ep"] is not None:
-                    r["ausente"] += 1
-                    if r["ausente"] > self.folga_frames:
-                        fechados.append(r["ep"])
-                        r["ep"] = None
-        return novos, fechados
+        self._cabeca(pose, s)
+        return self._limiarizar(s, lados), s
 
 
 Ponto = namedtuple("Ponto", "x y")
@@ -425,7 +527,7 @@ def compactar(res):
     """Copia do Resultado so com o necessario para redesenhar o frame depois (player de revisao)."""
     landmarks = None
     if res.landmarks is not None:
-        indices = {i for num in res.aus for i in PONTOS_AU[num]}
+        indices = {i for num in res.aus for i in PONTOS_POR_MALHA[res.malha].get(num, [])}
         landmarks = {i: Ponto(res.landmarks[i].x, res.landmarks[i].y) for i in indices}
     return replace(res, landmarks=landmarks, novos_episodios=[], alertas=[], novos_pontos=[])
 
@@ -451,7 +553,7 @@ def desenhar(frame, res):
             for t in combo:
                 cor_au[num_au(t)] = COR_EMOCAO[emocao]
         for num, au in sorted(res.aus.items()):
-            pontos = PONTOS_AU[num]
+            pontos = PONTOS_POR_MALHA[res.malha].get(num, [])
             if au.lado and len(pontos) == 2:
                 pontos = [pontos[0] if au.lado == "R" else pontos[1]]
             cor = cor_au.get(num, COR_AU_NEUTRA)
@@ -462,11 +564,12 @@ def desenhar(frame, res):
                     cv2.putText(frame, f"{num}{au.intensidade}", (x + 6, y - 6), fonte,
                                 escala * 0.7, cor, 1, cv2.LINE_AA)
         for emocao, combo in res.emocoes.items():
-            linhas.append((f"{emocao}: {rotulo_combinacao(combo, res.aus)}", COR_EMOCAO[emocao]))
+            linhas.append((f"{emocao}: {rotulo_combinacao(combo, res.aus, res.malha) or ROTULO_SEM_AUS}",
+                           COR_EMOCAO[emocao]))
         for descricao in res.pontos_ativos:
             linhas.append((f"Atencao: {descricao}", COR_ATENCAO))
         if res.aus:
-            linhas.append(("AUs: " + " ".join(rotulo_au(n, a) for n, a in sorted(res.aus.items())),
+            linhas.append(("AUs: " + " ".join(rotulo_au(n, a, res.malha) for n, a in sorted(res.aus.items())),
                            COR_AU_NEUTRA))
 
     altura_linha = int(30 * escala * 1.4)

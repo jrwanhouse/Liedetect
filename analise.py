@@ -11,11 +11,42 @@ from facs import AnalisadorFACS, compactar, salvar_relatorio
 from recortes import registrar_corte
 
 
+def criar_analisador(video, cfg, pasta, fps, ao_etapa=None, continuar=None):
+    """Analisador do detector configurado; o Py-Feat extrai antes as AUs do video inteiro."""
+    detector = cfg.get("detector", facs.MEDIAPIPE)
+    if detector != facs.PYFEAT:
+        return AnalisadorFACS(fps, cfg["webcam_espelhada"], cfg["calibracao_segundos"])
+    import pyfeat_backend as pf
+    avisar = ao_etapa or (lambda texto: None)
+    python = pf.localizar_python(cfg.get("pyfeat_python", ""))
+    if not python:
+        raise pf.PyFeatIndisponivel("ambiente do Py-Feat nao encontrado (.venv-pyfeat); veja o README")
+    modelo, pular = cfg.get("pyfeat_modelo", "v2"), max(1, int(cfg.get("pyfeat_pular", 1)))
+    saida = pf.caminho_cache(video, pasta, modelo, pular, cfg["webcam_espelhada"])
+    if os.path.exists(saida):
+        avisar("Py-Feat: reaproveitando a extracao anterior deste video")
+    else:
+        inicio = time.monotonic()
+
+        def progresso(feitos, total):
+            texto = f"Py-Feat: {feitos}/{total} frames"
+            if feitos:
+                restante = (time.monotonic() - inicio) / feitos * (total - feitos)
+                texto += f" (faltam ~{restante / 60:.0f} min)"
+            avisar(texto)
+        avisar("Py-Feat: carregando modelos...")
+        pf.extrair(video, saida, python, modelo, pular, cfg["webcam_espelhada"], progresso, continuar)
+    return pf.AnalisadorPyFeat(fps, cfg["webcam_espelhada"], cfg["calibracao_segundos"], pf.carregar(saida),
+                               pular, cfg.get("emocoes_pyfeat", "modelo"))
+
+
 def executar_analise(video, cfg, pasta, ao_evento=None, ao_frame=None, continuar=None,
-                     tempo_real=False, guardar_quadros=True):
+                     tempo_real=False, guardar_quadros=True, ao_etapa=None):
     """Analisa o video e grava relatorio_emocoes.csv (e recortes, se configurado) em `pasta`.
 
-    cfg: webcam_espelhada, calibracao_segundos, salvar_recortes.
+    cfg: webcam_espelhada, calibracao_segundos, salvar_recortes e, opcionais, detector
+         ("mediapipe"/"pyfeat"), emocoes_pyfeat, pyfeat_modelo, pyfeat_pular, pyfeat_python.
+    ao_etapa(texto): avisos de etapas longas (extracao do Py-Feat).
     ao_evento(tipo, dado): tipo "emocao" (episodio), "atencao" (ponto) ou "alerta" ((tempo, texto)).
     ao_frame(frame_idx, total, frame, res, analisador): chamado a cada frame analisado.
     continuar(): retornar False interrompe a analise.
@@ -28,7 +59,11 @@ def executar_analise(video, cfg, pasta, ao_evento=None, ao_frame=None, continuar
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     os.makedirs(pasta, exist_ok=True)
-    analisador = AnalisadorFACS(fps, cfg["webcam_espelhada"], cfg["calibracao_segundos"])
+    try:
+        analisador = criar_analisador(video, cfg, pasta, fps, ao_etapa, continuar)
+    except BaseException:
+        cap.release()
+        raise
     avisar = ao_evento or (lambda tipo, dado: None)
     alertas, cortes, resultados = [], set(), []
 
@@ -77,7 +112,11 @@ def executar_analise(video, cfg, pasta, ao_evento=None, ao_frame=None, continuar
         "episodios": analisador.episodios, "pontos": analisador.atencao.pontos,
         "tempos_piscadas": analisador.atencao.tempos_piscadas,
         "alertas": [list(a) for a in alertas],
-        "limiares_ajustados": {str(au): v for au, v in facs.LIMIARES_AJUSTADOS.items()},
+        "detector": analisador.detector,
+        "opcoes_detector": {k: cfg[k] for k in ("emocoes_pyfeat", "pyfeat_modelo", "pyfeat_pular")
+                            if analisador.detector == facs.PYFEAT and k in cfg},
+        "limiares_ajustados": {str(au): v for au, v in
+                               facs.LIMIARES_AJUSTADOS_POR_DETECTOR.get(analisador.detector, {}).items()},
         "resultados": resultados if guardar_quadros else None,
     }
 

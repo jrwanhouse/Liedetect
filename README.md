@@ -30,6 +30,31 @@ Emoções pelas combinações EMFACS (protótipos e variantes de Ekman & Friesen
 
 **Saídas:** no vídeo, cada AU ativa é marcada no ponto do rosto onde ocorre, na cor da emoção que integra. A interface gráfica mostra uma linha do tempo por emoção, e o modo terminal imprime um resumo dos trechos. Na pasta de saída (`<projeto>_saida/` ou, no terminal sem projeto, `trechos_suspeitos/`) ficam o `relatorio_emocoes.csv` (início, fim, emoção e combinação de AUs) e um recorte de 5 s de cada episódio.
 
+## 🔬 Detector alternativo: Py-Feat (opcional)
+Cada projeto pode usar o **MediaPipe** (padrão) ou o **Py-Feat** para medir AUs e emoções. A escolha fica em **Arquivo › Configurações do projeto** (ou nas **Preferências**, como padrão para novos projetos). O resto do sistema é o mesmo nos dois: episódios, pontos de atenção, perguntas, player de revisão, relatórios e validação FACS. Cada análise registra qual detector usou.
+
+> ⚠ **Licença:** o código do Py-Feat é MIT, mas **os pesos dos modelos não estão liberados para uso comercial**: as bases de treino são acadêmicas, e o img2pose é CC BY-NC. Use o Py-Feat para pesquisa e comparação, e não o distribua no produto vendido sem análise jurídica.
+
+**Instalação.** O Py-Feat precisa de PyTorch, que não existe para o Python 3.15. Por isso ele roda num **ambiente separado**, com Python 3.11 a 3.14, chamado pelo programa como processo externo (`pyfeat_worker.py`):
+```bash
+py -3.14 -m venv .venv-pyfeat
+.venv-pyfeat\Scripts\pip install -r requirements-pyfeat.txt
+```
+Se o ambiente estiver em outro lugar, informe o Python dele em **Preferências › Python do Py-Feat**. A primeira análise baixa os pesos dos modelos (alguns minutos).
+
+**Como funciona.** O Py-Feat processa o vídeo inteiro primeiro, com o progresso e o tempo restante na barra de status. Depois o vídeo segue pelo mesmo caminho do MediaPipe. A extração fica guardada na pasta de saída do projeto e é reaproveitada ao analisar de novo, por exemplo ao trocar o modo de emoções.
+
+| | MediaPipe | Py-Feat |
+|---|---|---|
+| AUs faciais | 27, por regras sobre blendshapes | 20 do classificador treinado com FACS (1, 2, 4, 5, 6, 7, 9, 10, **11**, 12, 14, 15, 17, 20, 23, **24**, 25, 26, 28) |
+| Intensidade A–E | escala do sinal | aproximada, pela probabilidade (0,5–1,0) |
+| Lado L/R e Desprezo | sim | não (o Py-Feat não informa lado) |
+| Piscadas (43/45/46) | blendshapes | abertura das pálpebras nos 68 pontos (EAR). O AU43 do modelo é ignorado, porque dispara em sorrisos de olhos abertos |
+| Cabeça (51–58) | geometria dos pontos | a mesma geometria, sobre os 68 pontos |
+| Olhar (61–64) | sim | não |
+| Emoções | regras EMFACS | **classificador do Py-Feat** (padrão) ou **regras EMFACS** sobre as AUs do Py-Feat |
+| Velocidade em CPU | tempo real | **~2,4 s por frame** (Detectorv2; o v1 ~3,5 s): 1 min de vídeo ≈ 70 min. A opção *analisar 1 a cada N frames* acelera, mas pode perder microexpressões |
+
 ## ◆ Pontos de Atenção
 > ⚠ **Pontos de atenção indicam variação emocional ou de estresse para revisão humana. NÃO indicam mentira.** Não existe sinal facial confiável de mentira (DePaulo et al., 2003; Bond & DePaulo, 2006). Nervosismo, constrangimento e a própria situação de entrevista produzem os mesmos sinais.
 
@@ -80,6 +105,7 @@ python -m unittest discover -s tests -v
 - `tests/test_aus.py`: cada AU isolada deve gerar só ela mesma. Cobre ainda AU6×AU7 no sorriso, AU25/26/27 pela abertura da boca, pálpebras (AU43/45/46, sem AU7 nem olhar falsos ao piscar), olhar (61–64), lado L/R, cabeça (51–58, sem AU53 falsa com a boca aberta), intensidade e coerência das tabelas com o FACS.
 - `tests/test_validacao.py`: kappa, F1 e leitura das células. Fluxo completo: exportação cega, consenso com empates, falsos positivos detectados, limiar sugerido e aplicação.
 - `tests/test_gui.py`: a interface sem janela visível (criar, analisar, marcar perguntas, salvar, reabrir, trocar de projeto durante a análise, menu de validação) e a criação do detector **real** do MediaPipe numa thread do PySide6.
+- `tests/test_pyfeat.py`: o detector Py-Feat sem o Py-Feat instalado (linhas sintéticas e um worker falso com o mesmo protocolo): AUs, emoções nos dois modos, piscadas pela abertura das pálpebras, cabeça, *1 a cada N frames*, erros, interrupção e reaproveitamento. O teste com o Py-Feat real roda com `LIEDETECT_TESTE_PYFEAT=1`.
 - `tests/test_medo.py`: as regras EMFACS de medo, o caminho blendshapes → AUs → emoção (com calibração) e uma sequência de vídeo simulada, com microexpressão e episódio sustentado.
 
 Os testes usam um detector simulado: verificam a lógica do sistema, não a precisão do MediaPipe em rostos reais. Duas convenções do modelo foram conferidas em foto real: o "Left" dos blendshapes é o lado esquerdo do sujeito, e fechar os olhos também eleva `eyeSquint` e `eyeLookDown`, por isso essas AUs são suprimidas durante a piscada.

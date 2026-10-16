@@ -19,12 +19,13 @@ from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                             QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+                             QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QSpinBox,
                              QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                              QInputDialog, QPlainTextEdit, QPushButton, QSlider, QVBoxLayout, QWidget)
 
 import preferencias
 import projeto as proj_mod
+import pyfeat_backend
 import validacao
 from analise import executar_analise, resumir_perguntas, separar_resultados
 from atencao import AVISO, carregar_perguntas, linhas_resumo, texto_ponto
@@ -91,8 +92,13 @@ class AnaliseThread(QThread):
         try:
             dados = executar_analise(self.video, self.cfg, self.pasta,
                                      ao_evento=self.evento_signal.emit, ao_frame=self._ao_frame,
-                                     continuar=lambda: self._run_flag, tempo_real=self.tempo_real)
-        except OSError as e:
+                                     continuar=lambda: self._run_flag, tempo_real=self.tempo_real,
+                                     ao_etapa=self.status_signal.emit)
+        except pyfeat_backend.AnaliseInterrompida:
+            self.status_signal.emit("Análise interrompida durante a extração do Py-Feat.")
+            self.concluido_signal.emit(None)
+            return
+        except (OSError, RuntimeError) as e:
             self.status_signal.emit(f"Erro: {e}")
             self.concluido_signal.emit(None)
             return
@@ -326,6 +332,48 @@ def _campos_analise(form, webcam, calibracao, recortes, rotulo_webcam):
     return chk_webcam, spn_calibracao, chk_recortes
 
 
+class CamposDetector:
+    """Escolha do detector de AUs e opcoes do Py-Feat (preferencias e projeto)."""
+
+    def __init__(self, form, valores):
+        self.cmb_detector = QComboBox()
+        for chave, nome in preferencias.DETECTORES.items():
+            self.cmb_detector.addItem(nome, chave)
+        self.cmb_detector.setCurrentIndex(self.cmb_detector.findData(valores["detector"]))
+        form.addRow("Detector de AUs:", self.cmb_detector)
+        self.cmb_emocoes = QComboBox()
+        for chave, nome in pyfeat_backend.MODOS_EMOCAO.items():
+            self.cmb_emocoes.addItem(nome, chave)
+        self.cmb_emocoes.setCurrentIndex(self.cmb_emocoes.findData(valores["emocoes_pyfeat"]))
+        form.addRow("Emoções (Py-Feat):", self.cmb_emocoes)
+        self.cmb_modelo = QComboBox()
+        for chave, nome in pyfeat_backend.MODELOS.items():
+            self.cmb_modelo.addItem(nome, chave)
+        self.cmb_modelo.setCurrentIndex(self.cmb_modelo.findData(valores["pyfeat_modelo"]))
+        form.addRow("Modelo (Py-Feat):", self.cmb_modelo)
+        self.spn_pular = QSpinBox()
+        self.spn_pular.setRange(1, 30)
+        self.spn_pular.setValue(int(valores["pyfeat_pular"]))
+        self.spn_pular.setToolTip("1 = todos os frames. Valores maiores aceleram, mas podem perder microexpressões.")
+        form.addRow("Analisar 1 a cada N frames:", self.spn_pular)
+        self.aviso = QLabel(f"⚠ {pyfeat_backend.AVISO_LICENCA} Em CPU leva segundos por frame.")
+        self.aviso.setWordWrap(True)
+        self.aviso.setStyleSheet("color: #FFD180;")
+        form.addRow(self.aviso)
+        self.cmb_detector.currentIndexChanged.connect(self._atualizar)
+        self._atualizar()
+
+    def _atualizar(self):
+        pyfeat = self.cmb_detector.currentData() == "pyfeat"
+        for w in (self.cmb_emocoes, self.cmb_modelo, self.spn_pular):
+            w.setEnabled(pyfeat)
+        self.aviso.setVisible(pyfeat)
+
+    def valores(self):
+        return {"detector": self.cmb_detector.currentData(), "emocoes_pyfeat": self.cmb_emocoes.currentData(),
+                "pyfeat_modelo": self.cmb_modelo.currentData(), "pyfeat_pular": self.spn_pular.value()}
+
+
 def _botoes(dialogo, form):
     botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     botoes.accepted.connect(dialogo.accept)
@@ -356,6 +404,20 @@ class DialogoPreferencias(QDialog):
         self.chk_webcam, self.spn_calibracao, self.chk_recortes = _campos_analise(
             form, prefs["webcam_espelhada"], prefs["calibracao_segundos"], prefs["salvar_recortes"],
             "Vídeo de webcam (espelhado)")
+        self.campos_detector = CamposDetector(form, prefs)
+
+        python = QHBoxLayout()
+        self.txt_python = QLineEdit(prefs["pyfeat_python"])
+        self.txt_python.setPlaceholderText(pyfeat_backend.python_padrao())
+        btn_python = QPushButton("...")
+        btn_python.clicked.connect(self._escolher_python)
+        python.addWidget(self.txt_python)
+        python.addWidget(btn_python)
+        form.addRow("Python do Py-Feat:", python)
+        self.lbl_python = QLabel()
+        self.txt_python.textChanged.connect(self._verificar_python)
+        self._verificar_python()
+        form.addRow("", self.lbl_python)
 
         form.addRow(QLabel("<b>Modo terminal sem projeto</b>"))
         pasta = QHBoxLayout()
@@ -371,6 +433,16 @@ class DialogoPreferencias(QDialog):
         form.addRow(arquivo)
         _botoes(self, form)
 
+    def _escolher_python(self):
+        caminho, _ = QFileDialog.getOpenFileName(self, "Python do ambiente do Py-Feat", "", "Python (python*)")
+        if caminho:
+            self.txt_python.setText(caminho)
+
+    def _verificar_python(self):
+        encontrado = pyfeat_backend.localizar_python(self.txt_python.text().strip())
+        self.lbl_python.setText(f"✔ {encontrado}" if encontrado else "✖ ambiente do Py-Feat não encontrado (veja o README)")
+        self.lbl_python.setStyleSheet(f"color: {'#A5D6A7' if encontrado else '#FF8A80'}; font-size: 11px;")
+
     def _escolher_pasta(self):
         pasta = QFileDialog.getExistingDirectory(self, "Pasta de saída", self.txt_pasta.text())
         if pasta:
@@ -385,6 +457,8 @@ class DialogoPreferencias(QDialog):
             "calibracao_segundos": self.spn_calibracao.value(),
             "pasta_saida": self.txt_pasta.text().strip() or preferencias.PADRAO["pasta_saida"],
             "salvar_recortes": self.chk_recortes.isChecked(),
+            "pyfeat_python": self.txt_python.text().strip(),
+            **self.campos_detector.valores(),
         }
 
 
@@ -398,6 +472,7 @@ class DialogoProjeto(QDialog):
         self.chk_webcam, self.spn_calibracao, self.chk_recortes = _campos_analise(
             form, proj.webcam_espelhada, proj.calibracao_segundos, proj.salvar_recortes,
             "Vídeo de webcam (imagem espelhada) — corrigir lados das AUs")
+        self.campos_detector = CamposDetector(form, proj.configuracoes())
         if proj.analise:
             nota = QLabel("Mudanças valem para a próxima análise (Analisar novamente).")
             nota.setStyleSheet("color: #FFD180;")
@@ -407,7 +482,8 @@ class DialogoProjeto(QDialog):
     def valores(self):
         return {"webcam_espelhada": self.chk_webcam.isChecked(),
                 "calibracao_segundos": self.spn_calibracao.value(),
-                "salvar_recortes": self.chk_recortes.isChecked()}
+                "salvar_recortes": self.chk_recortes.isChecked(),
+                **self.campos_detector.valores()}
 
 
 class DialogoValidacao(QDialog):
@@ -590,7 +666,9 @@ class MainWindow(QMainWindow):
         titulo = "Detector Forense"
         if self.projeto:
             titulo += f" — {self.projeto.nome}{' *' if self.projeto.modificado else ''}"
-            self.lbl_projeto.setText(f"Projeto: {self.projeto.caminho}   |   Vídeo: {self.projeto.video}")
+            detector = "Py-Feat" if self.projeto.detector == "pyfeat" else "MediaPipe"
+            self.lbl_projeto.setText(f"Projeto: {self.projeto.caminho}   |   Vídeo: {self.projeto.video}"
+                                     f"   |   Detector: {detector}")
         else:
             self.lbl_projeto.setText("Nenhum projeto aberto")
         self.setWindowTitle(titulo)
@@ -765,9 +843,8 @@ class MainWindow(QMainWindow):
             return
         valores = dialogo.valores()
         if valores != self.projeto.configuracoes():
-            self.projeto.webcam_espelhada = valores["webcam_espelhada"]
-            self.projeto.calibracao_segundos = valores["calibracao_segundos"]
-            self.projeto.salvar_recortes = valores["salvar_recortes"]
+            for chave, valor in valores.items():
+                setattr(self.projeto, chave, valor)
             self.chk_webcam.blockSignals(True)
             self.chk_webcam.setChecked(self.projeto.webcam_espelhada)
             self.chk_webcam.blockSignals(False)
@@ -833,7 +910,8 @@ class MainWindow(QMainWindow):
         self.linha_tempo.atualizar([], [], 0.0)
 
         tempo_real = self.prefs["modo_player"] == "analise"
-        self.thread_analise = AnaliseThread(proj.video, proj.configuracoes(), proj.pasta_saida(), tempo_real)
+        cfg = proj.configuracoes() | {"pyfeat_python": self.prefs["pyfeat_python"]}
+        self.thread_analise = AnaliseThread(proj.video, cfg, proj.pasta_saida(), tempo_real)
         self.thread_analise.frame_signal.connect(self.update_img)
         self.thread_analise.evento_signal.connect(self.adicionar_evento)
         self.thread_analise.status_signal.connect(self.statusBar().showMessage)

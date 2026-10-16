@@ -24,7 +24,15 @@ def analisar_no_terminal(video, cfg, pasta, perguntas, guardar_quadros=False):
     """Roda a analise imprimindo eventos, resumos e relatorios; retorna os dados da analise."""
     print(f"🔍 Inicializando analise computacional em segundo plano...")
 
+    linha_de_etapa = [False]  # a linha de progresso se sobrescreve (\r) e fica sem quebra
+
+    def fechar_etapa():
+        if linha_de_etapa[0]:
+            print()
+            linha_de_etapa[0] = False
+
     def ao_evento(tipo, dado):
+        fechar_etapa()
         if tipo == "emocao":
             print(f"🎭 [{formatar_tempo(dado['inicio'])}] {dado['emocao']} -> {dado['aus']}")
         elif tipo == "atencao":
@@ -35,11 +43,17 @@ def analisar_no_terminal(video, cfg, pasta, perguntas, guardar_quadros=False):
 
     def ao_frame(frame_idx, total, frame, res, analisador):
         if frame_idx % int(analisador.fps * 5) == 0 and total > 0:
+            fechar_etapa()
             print(f"Progresso: {frame_idx / total * 100:.1f}% completo... "
                   f"[Analise atual em {formatar_tempo(res.tempo)}]")
 
+    def ao_etapa(texto):
+        print(f"\r⏳ {texto}".ljust(70), end="", flush=True)
+        linha_de_etapa[0] = True
+
     dados = executar_analise(video, cfg, pasta, ao_evento=ao_evento, ao_frame=ao_frame,
-                             guardar_quadros=guardar_quadros)
+                             guardar_quadros=guardar_quadros, ao_etapa=ao_etapa)
+    fechar_etapa()
 
     print("\n📊 Resumo por emocao:")
     for emocao in EMOCOES:
@@ -90,9 +104,16 @@ def rodar_modo_terminal(prefs):
 
     cfg = {"webcam_espelhada": espelhado, "calibracao_segundos": prefs["calibracao_segundos"],
            "salvar_recortes": prefs["salvar_recortes"]}
-    analisar_no_terminal(video_input, cfg, prefs["pasta_saida"], perguntas)
+    cfg |= {k: prefs[k] for k in ("detector", "emocoes_pyfeat", "pyfeat_modelo", "pyfeat_pular", "pyfeat_python")}
+    if cfg["detector"] == "pyfeat":
+        from pyfeat_backend import AVISO_LICENCA
+        print(f"⚠ {AVISO_LICENCA}")
+    try:
+        analisar_no_terminal(video_input, cfg, prefs["pasta_saida"], perguntas)
+    except (OSError, RuntimeError) as e:
+        print(f"\n❌ {e}")
 
-def analisar_projeto_no_terminal(caminho):
+def analisar_projeto_no_terminal(caminho, prefs):
     """Analisa um projeto existente com as configuracoes e perguntas dele e grava o resultado."""
     try:
         proj = proj_mod.abrir(caminho)
@@ -106,9 +127,13 @@ def analisar_projeto_no_terminal(caminho):
     if proj.analise:
         print("ℹ️  A analise anterior do projeto sera substituida.")
     try:
-        dados = analisar_no_terminal(proj.video, proj.configuracoes(), proj.pasta_saida(), proj.perguntas,
+        if proj.detector == "pyfeat":
+            from pyfeat_backend import AVISO_LICENCA
+            print(f"⚠ {AVISO_LICENCA}")
+        cfg = proj.configuracoes() | {"pyfeat_python": prefs["pyfeat_python"]}
+        dados = analisar_no_terminal(proj.video, cfg, proj.pasta_saida(), proj.perguntas,
                                      guardar_quadros=True)
-    except OSError as e:
+    except (OSError, RuntimeError) as e:
         print(f"❌ {e}")
         return 1
     proj.analise, proj.resultados = separar_resultados(dados)
@@ -174,6 +199,6 @@ if __name__ == "__main__":
         from gui import rodar_modo_grafico
         rodar_modo_grafico(prefs, args.config, args.projeto)
     elif args.projeto:
-        sys.exit(analisar_projeto_no_terminal(args.projeto))
+        sys.exit(analisar_projeto_no_terminal(args.projeto, prefs))
     else:
         rodar_modo_terminal(prefs)

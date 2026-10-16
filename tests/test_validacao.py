@@ -137,5 +137,46 @@ class FluxoDeValidacao(unittest.TestCase):
         self.assertEqual(au12["amostras"], self.n - 2)
 
 
+class ValidacaoComPyFeat(unittest.TestCase):
+    """Projetos Py-Feat validam as AUs que o Py-Feat mede e gravam limiares proprios."""
+
+    def test_limiares_vao_para_o_arquivo_do_pyfeat(self):
+        import sys
+        import pyfeat_backend as pf
+        falso = os.path.join(os.path.dirname(os.path.abspath(__file__)), "falso_pyfeat_worker.py")
+        with tempfile.TemporaryDirectory() as base:
+            video = os.path.join(base, "v.mp4")
+            out = cv2.VideoWriter(video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (64, 48))
+            for i in range(240):
+                out.write(np.full((48, 64, 3), i % 255, np.uint8))
+            out.release()
+            prefs = dict(preferencias.PADRAO, detector="pyfeat")
+            proj = projeto.novo(video, prefs, os.path.join(base, "pf.liedetect"))
+            cfg = proj.configuracoes() | {"pyfeat_python": sys.executable, "salvar_recortes": False}
+            with mock.patch.object(pf, "WORKER", falso):
+                dados = executar_analise(video, cfg, proj.pasta_saida())
+            proj.analise, proj.resultados = separar_resultados(dados)
+            pasta = os.path.join(base, "val")
+            validacao.exportar_amostra(proj, pasta, n=12)
+            with open(os.path.join(pasta, validacao.ARQUIVO_META), encoding="utf-8") as f:
+                meta = json.load(f)
+            self.assertEqual(meta["detector"], "pyfeat")
+            self.assertIn(24, meta["aus"])                     # o Py-Feat mede a AU24
+            self.assertEqual(meta["limiares"]["12"], facs.LIMIAR_PYFEAT)
+
+            with open(os.path.join(pasta, validacao.ARQUIVO_LIMIARES_SUGERIDOS), "w") as f:
+                json.dump({"12": 0.7}, f)
+            destino = os.path.join(base, "limiares_aus_pyfeat.json")
+            try:
+                self.assertEqual(validacao.aplicar_limiares_sugeridos(pasta, destino), {12: 0.7})
+                self.assertEqual(facs.limiar_de(12, facs.PYFEAT), 0.7)
+                self.assertEqual(facs.limiar_de(12, facs.MEDIAPIPE), facs.LIMIAR_PADRAO)  # MediaPipe intocado
+            finally:
+                facs.carregar_limiares(os.path.join(base, "nao_existe.json"), facs.PYFEAT)
+
+    def test_mediapipe_nao_exporta_aus_que_nao_mede(self):
+        self.assertNotIn(24, [au for au in validacao.AUS_FACIAIS if au in facs.AUS_MEDIDAS[facs.MEDIAPIPE]])
+
+
 if __name__ == "__main__":
     unittest.main()

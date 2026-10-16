@@ -87,10 +87,16 @@ def sortear_frames(resultados, fps, n, aus=AUS_FACIAIS, semente=0):
     return sorted(escolhidos)
 
 
-def exportar_amostra(proj, pasta, n=100, aus=AUS_FACIAIS, semente=0):
-    """Grava a amostra para codificacao; retorna o numero de amostras exportadas."""
+def exportar_amostra(proj, pasta, n=100, aus=None, semente=0):
+    """Grava a amostra para codificacao; retorna o numero de amostras exportadas.
+
+    Por padrao, as AUs faciais que o detector do projeto mede.
+    """
     if not (proj.analise and proj.resultados):
         raise ValueError("o projeto precisa estar analisado (com resultados por frame)")
+    detector = proj.analise.get("detector", facs.MEDIAPIPE)
+    if aus is None:
+        aus = [au for au in AUS_FACIAIS if au in facs.AUS_MEDIDAS[detector]]
     fps = proj.analise["fps"]
     frames = sortear_frames(proj.resultados, fps, n, aus, semente)
     if not frames:
@@ -136,9 +142,10 @@ def exportar_amostra(proj, pasta, n=100, aus=AUS_FACIAIS, semente=0):
                 linhas_pred)
     with open(os.path.join(pasta, ARQUIVO_META), "w", encoding="utf-8") as f:
         json.dump({"projeto": proj.caminho, "video": proj.video, "fps": fps, "semente": semente,
+                   "detector": detector,
                    "aus": aus, "amostras": len(linhas_modelo), "exportado_em": datetime.now().isoformat(timespec="seconds"),
                    # limiares com que o projeto foi analisado (as colunas _sistema seguem estes)
-                   "limiares": {str(au): float(proj.analise.get("limiares_ajustados", {}).get(str(au), facs.LIMIARES_PADRAO[au]))
+                   "limiares": {str(au): float(proj.analise.get("limiares_ajustados", {}).get(str(au), facs.limiar_padrao_de(au, detector)))
                                 for au in aus}}, f, ensure_ascii=False, indent=2)
     with open(os.path.join(pasta, "LEIA-ME.txt"), "w", encoding="utf-8") as f:
         f.write(LEIA_ME.format(modelo=ARQUIVO_MODELO, predicoes=ARQUIVO_PREDICOES))
@@ -229,7 +236,7 @@ def avaliar(pasta, planilhas):
 
     resultado = []
     for au in aus:
-        lim = meta["limiares"].get(str(au), facs.LIMIAR_PADRAO)
+        lim = meta["limiares"].get(str(au), facs.limiar_padrao_de(au, meta.get("detector", facs.MEDIAPIPE)))
         sistema, verdade, scores, dif_intensidade, empates = [], [], [], [], 0
         for amostra, pred in predicoes.items():
             votos = [c[amostra][au] for c in codificadores if amostra in c]
@@ -307,8 +314,11 @@ def texto_resumo(resultado):
     return "\n".join(linhas)
 
 
-def aplicar_limiares_sugeridos(pasta, destino=facs.ARQUIVO_LIMIARES):
-    """Mescla os limiares sugeridos em limiares_aus.json e os aplica; retorna os ajustes ativos."""
+def aplicar_limiares_sugeridos(pasta, destino=None):
+    """Mescla os limiares sugeridos no arquivo de limiares do detector da amostra e os aplica."""
+    with open(os.path.join(pasta, ARQUIVO_META), encoding="utf-8") as f:
+        detector = json.load(f).get("detector", facs.MEDIAPIPE)
+    destino = destino or facs.ARQUIVOS_LIMIARES[detector]
     with open(os.path.join(pasta, ARQUIVO_LIMIARES_SUGERIDOS), encoding="utf-8") as f:
         sugeridos = json.load(f)
     atuais = {}
@@ -318,4 +328,4 @@ def aplicar_limiares_sugeridos(pasta, destino=facs.ARQUIVO_LIMIARES):
     atuais.update(sugeridos)
     with open(destino, "w", encoding="utf-8") as f:
         json.dump(atuais, f, indent=2)
-    return facs.carregar_limiares(destino)
+    return facs.carregar_limiares(destino, detector)

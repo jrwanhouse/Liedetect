@@ -22,6 +22,10 @@ class Projeto:
     webcam_espelhada: bool = False
     calibracao_segundos: float = 1.0
     salvar_recortes: bool = True
+    detector: str = "mediapipe"     # "mediapipe" ou "pyfeat"
+    emocoes_pyfeat: str = "modelo"  # "modelo" (classificador do Py-Feat) ou "emfacs"
+    pyfeat_modelo: str = "v2"
+    pyfeat_pular: int = 1           # Py-Feat: analisa 1 a cada N frames
     perguntas: list = field(default_factory=list)  # (tempo s, texto)
     analise: dict | None = None    # fps, duracao, episodios, pontos, tempos_piscadas, alertas, data
     resultados: list | None = None # Resultado compacto por frame (so em memoria; gravado a parte)
@@ -39,14 +43,18 @@ class Projeto:
 
     def configuracoes(self):
         return {"webcam_espelhada": self.webcam_espelhada, "calibracao_segundos": self.calibracao_segundos,
-                "salvar_recortes": self.salvar_recortes}
+                "salvar_recortes": self.salvar_recortes, "detector": self.detector,
+                "emocoes_pyfeat": self.emocoes_pyfeat, "pyfeat_modelo": self.pyfeat_modelo,
+                "pyfeat_pular": self.pyfeat_pular}
 
 
 def novo(video, prefs, caminho):
     """Projeto novo com as configuracoes padrao das preferencias."""
     return Projeto(video=os.path.abspath(video), webcam_espelhada=prefs["webcam_espelhada"],
                    calibracao_segundos=prefs["calibracao_segundos"],
-                   salvar_recortes=prefs["salvar_recortes"], caminho=os.path.abspath(caminho))
+                   salvar_recortes=prefs["salvar_recortes"], detector=prefs["detector"],
+                   emocoes_pyfeat=prefs["emocoes_pyfeat"], pyfeat_modelo=prefs["pyfeat_modelo"],
+                   pyfeat_pular=prefs["pyfeat_pular"], caminho=os.path.abspath(caminho))
 
 
 def _caminho_video_relativo(video, pasta_projeto):
@@ -96,6 +104,10 @@ def abrir(caminho):
         webcam_espelhada=bool(cfg.get("webcam_espelhada", False)),
         calibracao_segundos=float(cfg.get("calibracao_segundos", 1.0)),
         salvar_recortes=bool(cfg.get("salvar_recortes", True)),
+        detector=cfg.get("detector", "mediapipe"),  # projetos antigos: MediaPipe
+        emocoes_pyfeat=cfg.get("emocoes_pyfeat", "modelo"),
+        pyfeat_modelo=cfg.get("pyfeat_modelo", "v2"),
+        pyfeat_pular=max(1, int(cfg.get("pyfeat_pular", 1))),
         perguntas=[(float(p["tempo"]), p.get("texto", "")) for p in dados.get("perguntas", [])],
         analise=dados.get("analise"),
         caminho=caminho,
@@ -123,6 +135,7 @@ def _resultado_para_dict(r):
         "lm": None if r.landmarks is None else {str(i): [round(p.x, 5), round(p.y, 5)]
                                                  for i, p in r.landmarks.items()},
         "pa": r.pontos_ativos,
+        "m": r.malha,
     }
 
 
@@ -138,4 +151,5 @@ def _dict_para_resultado(d):
         scores={int(n): v for n, v in d.get("sc", {}).items()},  # projetos antigos nao tem
         emocoes={e: {_token(t) for t in c} for e, c in d["emo"].items()},
         pontos_ativos=d["pa"],
+        malha=d.get("m", "mp478"),
     )

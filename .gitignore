@@ -3,3 +3,4 @@ __pycache__/
 face_landmarker.task
 trechos_suspeitos/
 preferencias.json
+.venv-pyfeat/
